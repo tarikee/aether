@@ -31,6 +31,21 @@ pub fn signal(pid: u32, sig: i32) -> Result<(), i32> {
     }
 }
 
+/// Sends a signal for `aether kill`: the signal is 1 to 64, and pid 0, pid 1 and this
+/// program's own pid are refused whatever is asked.
+pub fn send_signal(pid: u32, sig: i32) -> Result<(), crate::sys::EndError> {
+    use crate::sys::EndError;
+    if pid <= 1 || pid == std::process::id() || !(1..=64).contains(&sig) {
+        return Err(EndError::Refused);
+    }
+    match signal(pid, sig) {
+        Ok(()) => Ok(()),
+        Err(libc::ESRCH) => Err(EndError::NotFound),
+        Err(libc::EPERM) => Err(EndError::NotAllowed),
+        Err(_) => Err(EndError::Refused),
+    }
+}
+
 /// The page size in bytes (4096 if the system does not say).
 pub fn page_size() -> u64 {
     sysconf(libc::_SC_PAGESIZE, 4096)

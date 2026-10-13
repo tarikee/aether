@@ -71,6 +71,10 @@ pub struct Parsed {
     pub interval_given: bool,
     pub force: bool,
     pub yes: bool,
+    /// The signal for `kill --signal`, as written (a name or a number).
+    pub signal: Option<String>,
+    /// `--no-defaults`: the file of default arguments is not read.
+    pub no_defaults: bool,
     pub view: View,
 }
 
@@ -85,9 +89,10 @@ Usage:
       one reading, then exit
   aether proc PID|NAME
       one process in full: command line, program, folder, parents, CPU time, open files
-  aether kill PID|NAME [--force] [-y]
+  aether kill PID|NAME [--force] [-y] [-s NAME|NUMBER]
       asks the process to stop and waits 3 s; says if it is still there.
       --force kills it. By NAME it lists the matches and asks first; -y skips the question.
+      -s sends that one signal and does not wait.
   aether check
       what this machine and OS offer, and what is missing
   aether version
@@ -104,6 +109,8 @@ Options:
   --disk MOUNT[,MOUNT]   only these disks, by mount point (default: every disk)
   --net NAME[,NAME]      only these network interfaces (default: every one)
   --json                 one JSON object per reading; a missing reading is null
+  -s, --signal NAME|NUMBER  kill: the signal to send (TERM, SIGSTOP, 19; 1 to 64)
+  --no-defaults          do not read the file of default arguments (aether/args)
 ";
 
 /// `aether version`: prints the program's version.
@@ -136,6 +143,8 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
         interval_given: false,
         force: false,
         yes: false,
+        signal: None,
+        no_defaults: false,
         view: View {
             by: Sort::Cpu,
             flat: false,
@@ -160,6 +169,8 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
             "--all" => p.view.all = true,
             "--force" => p.force = true,
             "-y" | "--yes" => p.yes = true,
+            "--no-defaults" => p.no_defaults = true,
+            "-s" | "--signal" => p.signal = Some(value(&mut it, a)?.to_string()),
             "-i" | "--interval" => {
                 let v = value(&mut it, a)?;
                 p.interval_given = true;
@@ -213,6 +224,12 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
         ["proc" | "kill", ..] => return Err("needs one PID or NAME".to_string()),
         [w, ..] => return Err(format!("unknown command {w}")),
     }
+    if p.signal.is_some() && p.command != "kill" {
+        return Err("--signal goes with kill".to_string());
+    }
+    if p.signal.is_some() && p.force {
+        return Err("--signal and --force do not go together".to_string());
+    }
     Ok(p)
 }
 
@@ -239,6 +256,28 @@ mod tests {
         assert_eq!(p.command, "kill");
         assert_eq!(p.target.as_deref(), Some("1234"));
         assert!(p.force && p.yes);
+    }
+
+    #[test]
+    fn signal_is_for_kill_only_and_not_with_force() {
+        let p = parse(&args("kill 1234 -s STOP")).unwrap();
+        assert_eq!(p.signal.as_deref(), Some("STOP"));
+        assert_eq!(
+            parse(&args("kill 1234 --signal 19"))
+                .unwrap()
+                .signal
+                .as_deref(),
+            Some("19")
+        );
+        assert!(parse(&args("-s TERM")).is_err());
+        assert!(parse(&args("kill 1234 -s TERM --force")).is_err());
+        assert!(parse(&args("kill 1234 -s")).is_err());
+    }
+
+    #[test]
+    fn no_defaults_is_read() {
+        assert!(parse(&args("--once --no-defaults")).unwrap().no_defaults);
+        assert!(!parse(&args("--once")).unwrap().no_defaults);
     }
 
     #[test]
