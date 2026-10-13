@@ -1,6 +1,7 @@
 //! The text view for people: one reading, sorted and grouped as the view asks.
 
 use crate::cli::{Sort, View};
+use crate::out::tree;
 use aether::sys::{
     BatterySample, CpuSample, DiskSample, GpuSample, HostSample, MemSample, NetSample, Proc,
     Sensor, SensorKind,
@@ -272,22 +273,43 @@ fn group(mut rows: Vec<Row>) -> Vec<Row> {
     out
 }
 
+/// The order of rows: the key, biggest first; then the name, then the pid.
+fn by_rows(by: Sort, a: &Row, b: &Row) -> std::cmp::Ordering {
+    key(by, b)
+        .total_cmp(&key(by, a))
+        .then_with(|| a.name.cmp(&b.name))
+        .then_with(|| a.pid.cmp(&b.pid))
+}
+
 fn procs(out: &mut Vec<u8>, procs: &[Proc], view: &View, room: Option<usize>) {
-    let grouped = !view.flat;
+    let grouped = !view.flat && !view.tree;
+    let by = view.by;
     let mut rows: Vec<Row> = procs.iter().map(Row::of).collect();
     if grouped {
         rows = group(rows);
     }
-    let by = view.by;
-    rows.sort_by(|a, b| {
-        key(by, b)
-            .total_cmp(&key(by, a))
-            .then_with(|| a.name.cmp(&b.name))
-            .then_with(|| a.pid.cmp(&b.pid))
-    });
+    // A tree is single processes, so rows[i] is procs[i] here and the tree can order by index.
+    let mut marks: Vec<String> = Vec::new();
+    if view.tree {
+        let mut tree = tree::shared();
+        tree.build(procs, |a, b| by_rows(by, &rows[a], &rows[b]));
+        rows = tree
+            .rows()
+            .iter()
+            .map(|r| {
+                let mut mark = String::new();
+                tree.draw(r, &mut mark);
+                marks.push(mark);
+                Row::of(&procs[r.index])
+            })
+            .collect();
+    } else {
+        rows.sort_by(|a, b| by_rows(by, a, b));
+    }
     let total = rows.len();
     if let Some(room) = room {
         rows.truncate(room);
+        marks.truncate(room);
     }
     let head: Vec<String> = if grouped {
         [
@@ -304,9 +326,15 @@ fn procs(out: &mut Vec<u8>, procs: &[Proc], view: &View, room: Option<usize>) {
         .map(|s| s.to_string())
         .collect()
     };
-    let body: Vec<Vec<String>> = rows.iter().map(|r| cells(r, grouped)).collect();
+    let body: Vec<Vec<String>> = rows
+        .iter()
+        .enumerate()
+        .map(|(i, r)| cells(r, grouped, marks.get(i).map_or("", String::as_str)))
+        .collect();
     let how = if grouped {
         "grouped by app"
+    } else if view.tree {
+        "as a tree"
     } else {
         "single processes"
     };
@@ -323,7 +351,7 @@ fn procs(out: &mut Vec<u8>, procs: &[Proc], view: &View, room: Option<usize>) {
 }
 
 /// The cells of one row, in the order of the table's header.
-fn cells(r: &Row, grouped: bool) -> Vec<String> {
+fn cells(r: &Row, grouped: bool, mark: &str) -> Vec<String> {
     let cpu = opt_f32(r.cpu, 1, "");
     let gpu = opt_f32(r.gpu, 1, "");
     let vram = opt_bytes(r.vram);
@@ -345,7 +373,7 @@ fn cells(r: &Row, grouped: bool) -> Vec<String> {
         let pid = r.pid.map_or_else(|| "-".to_string(), |p| p.to_string());
         vec![
             pid,
-            r.name.clone(),
+            format!("{mark}{}", r.name),
             r.threads.to_string(),
             cpu,
             mem,
@@ -453,6 +481,7 @@ mod tests {
         View {
             by,
             flat,
+            tree: false,
             all: false,
             only: only.map(|l| l.iter().map(|s| s.to_string()).collect()),
         }

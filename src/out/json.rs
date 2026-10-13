@@ -299,6 +299,7 @@ mod tests {
         let view = View {
             by: Sort::Cpu,
             flat: false,
+            tree: false,
             all: false,
             only: only.map(|l| l.iter().map(|s| s.to_string()).collect()),
         };
