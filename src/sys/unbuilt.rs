@@ -227,3 +227,8 @@ impl Procs {
         &self.list
     }
 }
+
+/// Every interface's addresses as (interface, address). Not built for this OS yet: none.
+pub fn addresses(out: &mut Vec<(String, String)>) {
+    out.clear();
+}

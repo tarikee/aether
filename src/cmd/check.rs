@@ -23,6 +23,15 @@ const FILES: &[(&str, &str)] = &[
     ("GPU per process", "proc/self/fdinfo"),
     ("device names", "usr/share/hwdata/pci.ids"),
     ("user names", "etc/passwd"),
+    (
+        "CPU clock per thread",
+        "sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq",
+    ),
+    (
+        "CPU power (RAPL)",
+        "sys/class/powercap/intel-rapl:0/energy_uj",
+    ),
+    ("ZFS cache", "proc/spl/kstat/zfs/arcstats"),
 ];
 
 /// Prints what can be read here.
@@ -44,10 +53,13 @@ fn write_report(out: &mut dyn Write, root: &Root) -> io::Result<()> {
     }
     writeln!(out, "files")?;
     for (label, rel) in FILES {
-        let state = if std::fs::metadata(root.path(rel)).is_ok() {
-            "found"
-        } else {
+        let path = root.path(rel);
+        let state = if std::fs::metadata(&path).is_err() {
             "missing"
+        } else if std::fs::File::open(&path).is_err() {
+            "unreadable"
+        } else {
+            "found"
         };
         writeln!(out, "  {label:<22} {state:<8} {rel}")?;
     }
