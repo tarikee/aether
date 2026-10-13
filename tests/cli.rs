@@ -251,6 +251,7 @@ fn run_with_config(root: &Path, config: &Path, args: &[&str]) -> Output {
         .args(args)
         .env("AETHER_ROOT", root)
         .env("XDG_CONFIG_HOME", config)
+        .env("APPDATA", config)
         .output()
         .expect("the program starts")
 }
@@ -510,6 +511,7 @@ fn once_json_is_one_object_without_a_root() {
         .args(["--once", "--json"])
         .env_remove("AETHER_ROOT")
         .env("XDG_CONFIG_HOME", empty_config())
+        .env("APPDATA", empty_config())
         .output()
         .expect("the program starts");
     assert_eq!(out.status.code(), Some(0), "exit status");
