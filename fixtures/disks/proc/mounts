@@ -1,0 +1,8 @@
+sysfs /sys sysfs rw,nosuid,nodev 0 0
+/dev/sda1 / ext4 rw,relatime 0 0
+/dev/sda1 /var/lib/containers/store ext4 rw 0 0
+/dev/sda2 /boot/efi vfat rw 0 0
+/dev/loop0 /snap/core/1 squashfs ro 0 0
+/dev/nvme0n1p2 /data\040disk xfs rw 0 0
+tmpfs /run tmpfs rw 0 0
+/dev/mapper/vg-home /home ext4 rw 0 0
