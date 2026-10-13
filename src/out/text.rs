@@ -34,10 +34,10 @@ pub fn write(reading: &Reading, view: &View, out: &mut Vec<u8>, screen: Option<u
         sensors(out, &reading.sensors);
     }
     if shown(view, "disk") {
-        disks(out, &reading.disks);
+        disks(out, &reading.disks, view);
     }
     if shown(view, "net") {
-        nets(out, &reading.nets);
+        nets(out, &reading.nets, view);
     }
     if shown(view, "battery") {
         battery(out, reading.battery.as_ref());
@@ -70,7 +70,15 @@ fn host(out: &mut Vec<u8>, h: &HostSample) {
 
 fn cpu(out: &mut Vec<u8>, c: &CpuSample) {
     let ghz = match c.mhz {
-        Some(mhz) => format!("{:.2} GHz", f64::from(mhz) / 1000.0),
+        Some(mhz) => match (c.threads_mhz.iter().min(), c.threads_mhz.iter().max()) {
+            (Some(lo), Some(hi)) => format!(
+                "{:.2} GHz ({:.2} to {:.2})",
+                f64::from(mhz) / 1000.0,
+                f64::from(*lo) / 1000.0,
+                f64::from(*hi) / 1000.0
+            ),
+            _ => format!("{:.2} GHz", f64::from(mhz) / 1000.0),
+        },
         None => "-".to_string(),
     };
     let load = match c.load {
@@ -79,7 +87,12 @@ fn cpu(out: &mut Vec<u8>, c: &CpuSample) {
     };
     let pct = opt_f32(c.pct, 1, "%");
     let temp = opt_f32(c.temp_c, 1, " °C");
-    line(out, "cpu", &format!("{pct}  {ghz}  {temp}  {load}"));
+    let power = opt_f32(c.power_w, 1, " W");
+    line(
+        out,
+        "cpu",
+        &format!("{pct}  {ghz}  {temp}  {power}  {load}"),
+    );
     if !c.threads.is_empty() {
         let each: Vec<String> = c.threads.iter().map(|t| format!("{t:.0}")).collect();
         line(out, "", &format!("threads {}", each.join(" ")));
@@ -142,33 +155,42 @@ fn sensors(out: &mut Vec<u8>, sensors: &[Sensor]) {
     }
 }
 
-fn disks(out: &mut Vec<u8>, disks: &[DiskSample]) {
-    if disks.is_empty() {
-        line(out, "disk", "-");
-    }
-    for (i, d) in disks.iter().enumerate() {
-        let label = if i == 0 { "disk" } else { "" };
+fn disks(out: &mut Vec<u8>, disks: &[DiskSample], view: &View) {
+    let mut first = true;
+    for d in disks.iter().filter(|d| view.shows_disk(&d.mount)) {
+        let label = if first { "disk" } else { "" };
+        first = false;
         let content = format!(
-            "{}  {}  {} of {}  read {}  write {}",
+            "{}  {}  {} of {}  read {}  write {}  busy {}",
             d.mount,
             d.dev,
             bytes(d.used),
             bytes(d.total),
             rate(d.read_bps),
-            rate(d.write_bps)
+            rate(d.write_bps),
+            opt_f32(d.busy_pct, 0, "%")
         );
         line(out, label, &content);
     }
+    if first {
+        line(out, "disk", "-");
+    }
 }
 
-fn nets(out: &mut Vec<u8>, nets: &[NetSample]) {
-    if nets.is_empty() {
-        line(out, "net", "-");
-    }
-    for (i, n) in nets.iter().enumerate() {
-        let label = if i == 0 { "net" } else { "" };
-        let content = format!("{}  down {}  up {}", n.name, rate(n.rx_bps), rate(n.tx_bps));
+fn nets(out: &mut Vec<u8>, nets: &[NetSample], view: &View) {
+    let mut first = true;
+    for n in nets.iter().filter(|n| view.shows_net(&n.name)) {
+        let label = if first { "net" } else { "" };
+        first = false;
+        let mut content = format!("{}  down {}  up {}", n.name, rate(n.rx_bps), rate(n.tx_bps));
+        for addr in &n.addrs {
+            content.push_str("  ");
+            content.push_str(addr);
+        }
         line(out, label, &content);
+    }
+    if first {
+        line(out, "net", "-");
     }
 }
 
@@ -479,6 +501,8 @@ mod tests {
 
     fn view(only: Option<&[&str]>, flat: bool, by: Sort) -> View {
         View {
+            disks: None,
+            nets: None,
             by,
             flat,
             tree: false,
@@ -531,6 +555,8 @@ mod tests {
                 threads: 8,
             },
             cpu: CpuSample {
+                threads_mhz: vec![],
+                power_w: None,
                 pct: Some(42.5),
                 threads: vec![10.0, 75.0],
                 mhz: Some(3200),
@@ -543,7 +569,7 @@ mod tests {
         assert_eq!(
             text,
             "aether  up 12m 34s  8 threads\n\
-             cpu     42.5%  3.20 GHz  61.0 °C  load 1.00 0.50 0.25\n\
+             cpu     42.5%  3.20 GHz  61.0 °C  -  load 1.00 0.50 0.25\n\
              \x20       threads 10 75\n"
         );
     }
@@ -555,7 +581,7 @@ mod tests {
             &r,
             &view(Some(&["cpu", "battery", "gpu"]), false, Sort::Cpu),
         );
-        assert!(text.contains("cpu     -  -  -  load -\n"), "{text}");
+        assert!(text.contains("cpu     -  -  -  -  load -\n"), "{text}");
         assert!(text.contains("battery -\n"), "{text}");
         assert!(text.contains("gpu     -\n"), "{text}");
     }

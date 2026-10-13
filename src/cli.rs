@@ -22,15 +22,37 @@ pub struct View {
     pub all: bool,
     /// The parts to show (`cpu`, `mem`, ...); `None` shows everything.
     pub only: Option<Vec<String>>,
+    /// The mounts `--disk` names; `None` shows every disk.
+    pub disks: Option<Vec<String>>,
+    /// The interfaces `--net` names; `None` shows every one.
+    pub nets: Option<Vec<String>>,
 }
 
 impl View {
+    /// Whether `--disk` shows this mount (no `--disk` shows every disk).
+    pub fn shows_disk(&self, mount: &str) -> bool {
+        named(&self.disks, mount)
+    }
+
+    /// Whether `--net` shows this interface (no `--net` shows every one).
+    pub fn shows_net(&self, name: &str) -> bool {
+        named(&self.nets, name)
+    }
+
     /// Whether `--only` names this part (no `--only` shows everything).
     pub fn shows(&self, part: &str) -> bool {
         match &self.only {
             None => true,
             Some(list) => list.iter().any(|p| p == part),
         }
+    }
+}
+
+/// Whether a list named on the command line has this name (no list names everything).
+fn named(list: &Option<Vec<String>>, name: &str) -> bool {
+    match list {
+        None => true,
+        Some(names) => names.iter().any(|n| n == name),
     }
 }
 
@@ -79,6 +101,8 @@ Options:
   --tree                 single processes, each under its parent
   --all                  print every row, past the screen's height
   --only LIST            only these parts, e.g. cpu,mem (default: everything)
+  --disk MOUNT[,MOUNT]   only these disks, by mount point (default: every disk)
+  --net NAME[,NAME]      only these network interfaces (default: every one)
   --json                 one JSON object per reading; a missing reading is null
 ";
 
@@ -118,6 +142,8 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
             tree: false,
             all: false,
             only: None,
+            disks: None,
+            nets: None,
         },
     };
     let mut words: Vec<&str> = Vec::new();
@@ -151,6 +177,14 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
                     "disk" => Sort::Disk,
                     other => return Err(format!("--by takes cpu, mem, gpu or disk, not {other}")),
                 };
+            }
+            "--disk" => {
+                let list = value(&mut it, a)?;
+                p.view.disks = Some(list.split(',').map(str::to_string).collect());
+            }
+            "--net" => {
+                let list = value(&mut it, a)?;
+                p.view.nets = Some(list.split(',').map(str::to_string).collect());
             }
             "--only" => {
                 let list = value(&mut it, a)?;
@@ -205,6 +239,18 @@ mod tests {
         assert_eq!(p.command, "kill");
         assert_eq!(p.target.as_deref(), Some("1234"));
         assert!(p.force && p.yes);
+    }
+
+    #[test]
+    fn disk_and_net_lists_are_read() {
+        let p = parse(&args("--once --disk /,/data --net enp3s0")).unwrap();
+        assert_eq!(
+            p.view.disks,
+            Some(vec!["/".to_string(), "/data".to_string()])
+        );
+        assert_eq!(p.view.nets, Some(vec!["enp3s0".to_string()]));
+        assert!(p.view.shows_disk("/data") && !p.view.shows_disk("/home"));
+        assert!(p.view.shows_net("enp3s0") && !p.view.shows_net("wlan0"));
     }
 
     #[test]
