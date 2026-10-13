@@ -22,12 +22,21 @@ pub fn sources() -> &'static [(&'static str, Built)] {
     ]
 }
 
+/// Sends one signal for `aether kill --signal`; not built on this OS yet.
+pub fn send_signal(_pid: u32, _sig: i32) -> Result<(), EndError> {
+    Err(EndError::Refused)
+}
+
 /// Ends a process: a signal, then a wait; with `force`, a kill.
 pub fn end(_pid: u32, _force: bool) -> Result<(), EndError> {
     Err(EndError::Refused)
 }
 
 /// One process in full.
+pub fn command_line(_root: &Root, _pid: u32) -> Option<String> {
+    None
+}
+
 pub fn detail(_root: &Root, _pid: u32) -> Option<ProcDetail> {
     None
 }
