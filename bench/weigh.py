@@ -56,13 +56,18 @@ def locate(prog, extra):
 
 
 def version(path):
-    try:
-        done = subprocess.run([path, "--version"], stdin=subprocess.DEVNULL, capture_output=True,
-                              timeout=5, env=ENV)
-    except (OSError, subprocess.SubprocessError):
-        return "?"
-    text = ANSI.sub("", (done.stdout or done.stderr).decode("utf-8", "replace")).strip()
-    return (text.splitlines() or ["?"])[0][:40]
+    # Most monitors take --version; atop only knows -V and prints its usage for --version.
+    for flag in ("--version", "-V"):
+        try:
+            done = subprocess.run([path, flag], stdin=subprocess.DEVNULL, capture_output=True,
+                                  timeout=5, env=ENV)
+        except (OSError, subprocess.SubprocessError):
+            return "?"
+        text = ANSI.sub("", (done.stdout or done.stderr).decode("utf-8", "replace")).strip()
+        first = (text.splitlines() or ["?"])[0][:40]
+        if not first.startswith("Usage"):
+            return first
+    return "?"
 
 
 def is_script(path):

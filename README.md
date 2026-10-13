@@ -121,8 +121,8 @@ is resident minus shared.
 
 ## How light
 
-Measured on Linux, on a machine with 12 threads and 524 processes running. Each monitor ran alone, after the one before
-it had ended, for 50 seconds of reading, with a reading every second. CPU is the ticks of the
+Measured on Linux, on a machine with 12 threads and 558 processes running. Each monitor ran alone, after the one before
+it had ended, for 45 seconds of reading, with a reading every second. CPU is the ticks of the
 process and its live children from `/proc`; memory is its peak resident size; the program size
 is the file that runs.
 
@@ -131,16 +131,16 @@ has no terminal. It is left 2 seconds to settle, then read from `/proc`.
 
 | Monitor | Version | CPU seconds | % of one core | Peak memory (MB) | Read calls per reading | Program (kB) |
 |---|---|---:|---:|---:|---:|---:|
-| aether | aether 0.1.0 | 0.29 | 0.58 | 3.9 | 302.9 | 763 |
-| aether --json | aether 0.1.0 | 0.30 | 0.60 | 3.6 | 298.8 | 763 |
-| top | top from procps-ng 4.0.6 | 0.94 | 1.88 | 21.5 | 1051.2 | 142 |
-| btop | btop version: 1.4.7 | 0.79 | 1.58 | 24.6 | 601.2 | 1614 |
-| bottom | bottom 0.14.9 | 2.91 | 5.82 | 8.0 | 2911.9 | 4988 |
-| glances | Glances version:	4.5.8 | 6.91 | 13.81 | 59.3 | 4560.2 |  |
-| gotop | gotop v4.2.0 (20220929T182223) | 1.71 | 3.42 | 22.8 | 2472.4 | 7552 |
-| zenith | zenith 0.15.1 | 7.35 | 14.69 | 40.8 | 22001.3 | 2267 |
-
-Not in the table, because they are not installed on the machine: htop, atop.
+| aether | aether 0.1.0 | 0.34 | 0.76 | 3.9 | 340.6 | 763 |
+| aether --json | aether 0.1.0 | 0.29 | 0.64 | 3.6 | 332.5 | 763 |
+| top | top from procps-ng 4.0.6 | 0.77 | 1.71 | 21.6 | 1141.0 | 142 |
+| htop | htop 3.4.1 | 5.90 | 13.10 | 20.0 | 11631.4 | 373 |
+| btop | btop version: 1.4.7 | 0.69 | 1.53 | 24.6 | 639.5 | 1614 |
+| bottom | bottom 0.14.9 | 3.30 | 7.33 | 8.3 | 3091.0 | 4988 |
+| glances | Glances version:	4.5.8 | 6.54 | 14.52 | 59.5 | 4680.6 |  |
+| atop | Version: 2.13.0 - 2026/07/18 19:38:52    | 8.11 | 18.01 | 37.2 | 23934.9 | 391 |
+| gotop | gotop v4.2.0 (20220929T182223) | 1.62 | 3.60 | 23.0 | 2632.9 | 7552 |
+| zenith | zenith 0.15.1 | 7.43 | 16.50 | 48.0 | 23956.9 | 2267 |
 
 Run `python3 bench/weigh.py` to measure on your own machine. It needs only the standard library,
 and it reads `/proc`, so it does nothing on other systems.
