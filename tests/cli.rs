@@ -1,9 +1,9 @@
 //! Runs the built program against the fixture trees and checks what it prints.
 
-#[cfg(target_os = "linux")]
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 const BIN: &str = env!("CARGO_BIN_EXE_aether");
 
@@ -231,12 +231,35 @@ fn copy_dir(from: &Path, to: &Path) {
     }
 }
 
+/// A new, empty folder for one run's settings, so that no test reads this machine's own file.
+fn empty_config() -> PathBuf {
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    let dir =
+        Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("config-{}-{n}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).expect("a temporary config folder");
+    dir
+}
+
 fn run(root: &Path, args: &[&str]) -> Output {
+    run_with_config(root, &empty_config(), args)
+}
+
+fn run_with_config(root: &Path, config: &Path, args: &[&str]) -> Output {
     Command::new(BIN)
         .args(args)
         .env("AETHER_ROOT", root)
+        .env("XDG_CONFIG_HOME", config)
         .output()
         .expect("the program starts")
+}
+
+/// Writes the file of default arguments into a config folder.
+fn write_defaults(config: &Path, text: &str) {
+    let dir = config.join("aether");
+    fs::create_dir_all(&dir).expect("a folder for the defaults");
+    fs::write(dir.join("args"), text).expect("the defaults file");
 }
 
 fn stdout(out: &Output) -> String {
@@ -486,6 +509,7 @@ fn once_json_is_one_object_without_a_root() {
     let out = Command::new(BIN)
         .args(["--once", "--json"])
         .env_remove("AETHER_ROOT")
+        .env("XDG_CONFIG_HOME", empty_config())
         .output()
         .expect("the program starts");
     assert_eq!(out.status.code(), Some(0), "exit status");
@@ -495,4 +519,104 @@ fn once_json_is_one_object_without_a_root() {
     for key in KEYS {
         assert!(field(&fields, key).is_some(), "missing key {key}");
     }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn the_defaults_file_applies_and_the_command_line_wins() {
+    let config = empty_config();
+    write_defaults(&config, "# the usual view\n--json --only cpu,mem\n");
+    let out = run_with_config(&tree("basic"), &config, &["--once"]);
+    assert_eq!(out.status.code(), Some(0), "exit status");
+    let fields = object(&stdout(&out));
+    assert!(field(&fields, "cpu").is_some(), "the file's --json applies");
+    assert!(field(&fields, "mem").is_some(), "the file's --only applies");
+
+    let out = run_with_config(&tree("basic"), &config, &["--once", "--only", "mem"]);
+    assert_eq!(out.status.code(), Some(0), "exit status");
+    let fields = object(&stdout(&out));
+    assert!(field(&fields, "mem").is_some(), "mem is kept");
+    assert!(
+        field(&fields, "cpu").is_none(),
+        "the command line's --only wins"
+    );
+}
+
+#[test]
+fn no_defaults_ignores_the_file() {
+    let config = empty_config();
+    write_defaults(&config, "--json\n");
+    let out = run_with_config(&tree("basic"), &config, &["--once", "--no-defaults"]);
+    assert_eq!(out.status.code(), Some(0), "exit status");
+    assert!(
+        !stdout(&out).trim_start().starts_with('{'),
+        "text, not JSON"
+    );
+}
+
+#[test]
+fn a_missing_defaults_file_is_silent() {
+    let out = run(&tree("basic"), &["--once"]);
+    assert_eq!(out.status.code(), Some(0), "exit status");
+    assert!(out.stderr.is_empty(), "nothing on stderr");
+}
+
+#[test]
+fn only_the_live_view_reads_the_defaults_file() {
+    let config = empty_config();
+    write_defaults(&config, "--nope\n");
+    let live = run_with_config(&tree("basic"), &config, &["--once"]);
+    assert_eq!(
+        live.status.code(),
+        Some(2),
+        "the bad option in the file is refused"
+    );
+    assert!(
+        String::from_utf8_lossy(&live.stderr).contains("unknown option --nope"),
+        "the file's option is named"
+    );
+    for args in [&["check"][..], &["proc", "1"][..], &["kill", "999999"][..]] {
+        let out = run_with_config(&tree("basic"), &config, args);
+        assert!(
+            !String::from_utf8_lossy(&out.stderr).contains("--nope"),
+            "{args:?} does not read the file"
+        );
+    }
+}
+
+#[test]
+fn an_unknown_or_out_of_range_signal_is_refused_in_plain_words() {
+    let out = run(&tree("basic"), &["kill", "-s", "NOPE", "999999"]);
+    assert_eq!(out.status.code(), Some(2), "exit status");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("unknown signal NOPE"),
+        "the name is said"
+    );
+    let out = run(&tree("basic"), &["kill", "--signal", "65", "999999"]);
+    assert_eq!(out.status.code(), Some(2), "a number above 64 is refused");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn kill_sends_a_named_or_numbered_signal_and_does_not_wait() {
+    let mut child = Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .expect("sleep starts");
+    let pid = child.id().to_string();
+    let out = run(&tree("basic"), &["kill", "--signal", "STOP", &pid]);
+    assert_eq!(out.status.code(), Some(0), "stop exit status");
+    assert!(
+        stdout(&out).starts_with("sent SIGSTOP to pid"),
+        "says it sent"
+    );
+    let out = run(&tree("basic"), &["kill", "-s", "18", &pid]);
+    assert_eq!(out.status.code(), Some(0), "continue exit status");
+    assert!(
+        stdout(&out).starts_with("sent SIGCONT to pid"),
+        "a number is named too"
+    );
+    let out = run(&tree("basic"), &["kill", "-s", "KILL", &pid]);
+    assert_eq!(out.status.code(), Some(0), "kill exit status");
+    let _ = child.wait();
 }

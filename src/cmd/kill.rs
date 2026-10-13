@@ -1,17 +1,66 @@
-//! `aether kill PID|NAME`: asks a process to stop, then waits; `--force` kills it.
+//! `aether kill PID|NAME`: asks a process to stop, then waits; `--force` kills it. With
+//! `-s SIGNAL` it sends that one signal and does not wait.
 
 use crate::cli::Parsed;
 use crate::cmd::live::finish;
 use crate::cmd::proc::named;
-use aether::sys::{end, EndError, Procs, Root};
+use aether::sys::{end, send_signal, EndError, Procs, Root};
 use std::io::{self, IsTerminal, Write};
 use std::process::ExitCode;
 
-/// Ends one process or the processes with a name.
+/// The signals `-s` knows by name, as Linux and the other Unix systems number them.
+#[cfg(unix)]
+const NAMES: &[(&str, i32)] = &[
+    ("HUP", libc::SIGHUP),
+    ("INT", libc::SIGINT),
+    ("QUIT", libc::SIGQUIT),
+    ("KILL", libc::SIGKILL),
+    ("TERM", libc::SIGTERM),
+    ("USR1", libc::SIGUSR1),
+    ("USR2", libc::SIGUSR2),
+    ("CONT", libc::SIGCONT),
+    ("STOP", libc::SIGSTOP),
+];
+
+#[cfg(not(unix))]
+const NAMES: &[(&str, i32)] = &[];
+
+/// The number of a signal given as a name (`TERM`, `SIGTERM`, any case) or as a number 1 to 64.
+pub(crate) fn signal_number(text: &str) -> Option<i32> {
+    if let Ok(n) = text.parse::<i32>() {
+        return (1..=64).contains(&n).then_some(n);
+    }
+    let upper = text.to_ascii_uppercase();
+    let name = upper.strip_prefix("SIG").unwrap_or(upper.as_str());
+    NAMES
+        .iter()
+        .find(|(known, _)| *known == name)
+        .map(|(_, n)| *n)
+}
+
+/// How a signal is written in the answer: `SIGSTOP` if it has a name, else `signal 99`.
+fn shown(sig: i32) -> String {
+    match NAMES.iter().find(|(_, n)| *n == sig) {
+        Some((name, _)) => format!("SIG{name}"),
+        None => format!("signal {sig}"),
+    }
+}
+
+/// Ends one process or the processes with a name, or sends them the `-s` signal.
 pub fn run(parsed: &Parsed) -> ExitCode {
     let Some(target) = parsed.target.as_deref() else {
         eprintln!("aether: kill needs one PID or NAME");
         return ExitCode::from(2);
+    };
+    let signal = match parsed.signal.as_deref() {
+        None => None,
+        Some(text) => match signal_number(text) {
+            Some(sig) => Some(sig),
+            None => {
+                eprintln!("aether: unknown signal {text}; use a name such as TERM or STOP, or a number from 1 to 64");
+                return ExitCode::from(2);
+            }
+        },
     };
     let root = Root::system();
     let me = std::process::id();
@@ -45,9 +94,13 @@ pub fn run(parsed: &Parsed) -> ExitCode {
         } else {
             format!("pid {pid} ({name})")
         };
-        match end(*pid, parsed.force) {
-            Ok(()) => {
-                let _ = writeln!(out, "ended {label}");
+        let outcome = match signal {
+            Some(sig) => send_signal(*pid, sig).map(|()| format!("sent {} to {label}", shown(sig))),
+            None => end(*pid, parsed.force).map(|()| format!("ended {label}")),
+        };
+        match outcome {
+            Ok(line) => {
+                let _ = writeln!(out, "{line}");
             }
             Err(e) => {
                 all_ended = false;
@@ -107,6 +160,21 @@ fn reason(e: EndError, pid: u32) -> String {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn signals_by_name_with_or_without_sig_and_by_number() {
+        assert_eq!(signal_number("STOP"), signal_number("SIGSTOP"));
+        assert_eq!(signal_number("sigterm"), signal_number("TERM"));
+        assert_eq!(signal_number("19"), Some(19));
+        assert_eq!(signal_number("1"), Some(1));
+        assert_eq!(signal_number("64"), Some(64));
+        assert_eq!(signal_number("0"), None);
+        assert_eq!(signal_number("65"), None);
+        assert_eq!(signal_number("NOPE"), None);
+        assert_eq!(signal_number("SIG"), None);
+        #[cfg(unix)]
+        assert_eq!(signal_number("TERM"), Some(libc::SIGTERM));
+    }
 
     #[test]
     fn init_and_itself_are_refused() {
