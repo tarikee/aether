@@ -1,6 +1,7 @@
 //! CPU: total and per thread, clock, temperature and load (proc/stat and friends).
 
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use super::reader::{fields, lines, num, PFile};
 use crate::sys::{CpuSample, Root};
@@ -9,6 +10,9 @@ use crate::sys::{CpuSample, Root};
 const STAT_CAP: usize = 64 * 1024;
 const LOAD_CAP: usize = 128;
 const SMALL_CAP: usize = 32;
+/// The package energy counter and its wrap point (root only on most machines).
+const RAPL_ENERGY: &str = "sys/class/powercap/intel-rapl:0/energy_uj";
+const RAPL_RANGE: &str = "sys/class/powercap/intel-rapl:0/max_energy_range_uj";
 
 /// The hwmon chips that carry the CPU temperature.
 const CPU_CHIPS: [&str; 4] = ["k10temp", "coretemp", "zenpower", "cpu_thermal"];
@@ -18,6 +22,10 @@ pub struct Cpu {
     stat: Option<PFile>,
     loadavg: Option<PFile>,
     freqs: Vec<PFile>,
+    thread_freqs: Vec<PFile>,
+    power: Option<PFile>,
+    range: Option<u64>,
+    energy: Option<(u64, Instant)>,
     temp: Option<PFile>,
     /// Total and busy time at the last reading: index 0 is the whole CPU, then each thread.
     last: Vec<(u64, u64)>,
@@ -29,26 +37,71 @@ impl Cpu {
     pub fn open(root: &Root) -> Cpu {
         let stat_path = root.path("proc/stat");
         let threads = std::fs::read(&stat_path).map_or(0, |b| count_threads(&b));
+        let thread_freqs = thread_freq_files(root, threads);
+        // The policy clocks are read only when there is no clock per thread.
+        let freqs = if thread_freqs.is_empty() {
+            freq_files(root)
+        } else {
+            Vec::new()
+        };
         Cpu {
             stat: PFile::open(&stat_path, STAT_CAP),
             loadavg: PFile::open(&root.path("proc/loadavg"), LOAD_CAP),
-            freqs: freq_files(root),
+            freqs,
+            thread_freqs,
+            power: PFile::open(&root.path(RAPL_ENERGY), SMALL_CAP),
+            range: PFile::open(&root.path(RAPL_RANGE), SMALL_CAP)
+                .and_then(|mut f| first_number(&mut f)),
+            energy: None,
             temp: cpu_temp_input(root).and_then(|p| PFile::open(&p, SMALL_CAP)),
             last: vec![(0, 0); threads + 1],
             primed: false,
             sample: CpuSample {
                 threads: Vec::with_capacity(threads),
+                threads_mhz: Vec::with_capacity(threads),
                 ..CpuSample::default()
             },
         }
     }
 
     pub fn read(&mut self) -> &CpuSample {
-        self.sample.mhz = read_mhz(&mut self.freqs);
+        self.read_clocks();
+        self.sample.power_w = self.read_power(Instant::now());
         self.sample.temp_c = self.temp.as_mut().and_then(read_celsius);
         self.sample.load = self.loadavg.as_mut().and_then(read_load);
         self.read_stat();
         &self.sample
+    }
+
+    /// The clock of each thread, and `mhz` as their average (the policy clocks only when
+    /// there are no per-thread clocks).
+    fn read_clocks(&mut self) {
+        self.sample.threads_mhz.clear();
+        for file in self.thread_freqs.iter_mut() {
+            if let Some(mhz) = first_number(file).and_then(|khz| u32::try_from(khz / 1000).ok()) {
+                self.sample.threads_mhz.push(mhz);
+            }
+        }
+        let count = self.sample.threads_mhz.len() as u64;
+        let sum: u64 = self.sample.threads_mhz.iter().map(|m| u64::from(*m)).sum();
+        self.sample.mhz = match count {
+            0 => read_mhz(&mut self.freqs),
+            n => u32::try_from(sum / n).ok(),
+        };
+    }
+
+    /// Watts since the last reading, from the package energy counter. `None` the first time
+    /// and when the counter cannot be read.
+    fn read_power(&mut self, now: Instant) -> Option<f32> {
+        let file = self.power.as_mut()?;
+        let energy = first_number(file)?;
+        let (prev, before) = self.energy.replace((energy, now))?;
+        watts(
+            prev,
+            energy,
+            self.range,
+            now.duration_since(before).as_secs_f64(),
+        )
     }
 
     /// Total and per-thread percentages, from the busy time since the last reading.
@@ -96,6 +149,36 @@ impl Cpu {
         }
         self.primed = true;
     }
+}
+
+/// The first number of a one-number file.
+fn first_number(file: &mut PFile) -> Option<u64> {
+    fields(file.read()).next().and_then(num)
+}
+
+/// The current clock file of each thread (`cpuN`), for the threads counted in proc/stat.
+fn thread_freq_files(root: &Root, threads: usize) -> Vec<PFile> {
+    (0..threads)
+        .filter_map(|n| {
+            let path = root.path(&format!(
+                "sys/devices/system/cpu/cpu{n}/cpufreq/scaling_cur_freq"
+            ));
+            PFile::open(&path, SMALL_CAP)
+        })
+        .collect()
+}
+
+/// Watts between two energy readings in microjoules; the counter wraps at `range`.
+pub(crate) fn watts(prev: u64, cur: u64, range: Option<u64>, secs: f64) -> Option<f32> {
+    if secs <= 0.0 {
+        return None;
+    }
+    let used = if cur >= prev {
+        cur - prev
+    } else {
+        range?.saturating_sub(prev).saturating_add(cur)
+    };
+    Some((used as f64 / 1e6 / secs) as f32)
 }
 
 /// How many per-thread lines (`cpu0`, `cpu1`, …) a `proc/stat` buffer holds.
@@ -252,6 +335,7 @@ mod tests {
         assert_eq!(first.pct, None);
         assert!(first.threads.is_empty());
         assert_eq!(first.mhz, Some(3000));
+        assert_eq!(first.threads_mhz, vec![2800, 3200]);
         assert_eq!(first.temp_c, Some(63.5));
         assert_eq!(first.load, Some([0.52, 0.58, 0.59]));
 
@@ -267,6 +351,15 @@ mod tests {
     fn counts_the_thread_lines_only() {
         let stat = std::fs::read(tree("").path("proc/stat")).expect("fixture");
         assert_eq!(count_threads(&stat), 2);
+    }
+
+    #[test]
+    fn watts_from_two_energy_readings_and_a_wrap() {
+        assert_eq!(watts(1_000_000, 3_000_000, None, 2.0), Some(1.0));
+        let max = 10_000_000;
+        assert_eq!(watts(max - 1_000_000, 500_000, Some(max), 1.0), Some(1.5));
+        assert_eq!(watts(5, 4, None, 1.0), None);
+        assert_eq!(watts(0, 1, None, 0.0), None);
     }
 
     #[test]

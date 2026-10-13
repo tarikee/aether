@@ -1,8 +1,9 @@
 //! Network interfaces: rates from proc/net/dev. Only physical interfaces are listed.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use super::calls;
 use super::disk::rate;
 use super::reader::{fields, lines, num, PFile};
 use crate::sys::{NetSample, Root};
@@ -24,6 +25,10 @@ pub struct Nets {
     seen: Vec<Iface>,
     list: Vec<NetSample>,
     last: Option<Instant>,
+    /// Addresses are read only on a live system, and again on every 30th reading.
+    live: bool,
+    ticks: u32,
+    addrs: Vec<(String, String)>,
 }
 
 impl Nets {
@@ -34,10 +39,14 @@ impl Nets {
             seen: Vec::new(),
             list: Vec::new(),
             last: None,
+            live: root.base() == Path::new("/"),
+            ticks: 0,
+            addrs: Vec::new(),
         };
         // The names are learned and the list built here; a tick only updates numbers.
         nets.update();
         nets.sync_list();
+        nets.refresh_addrs();
         nets
     }
 
@@ -48,6 +57,10 @@ impl Nets {
 
         self.update();
         self.sync_list();
+        self.ticks = self.ticks.wrapping_add(1);
+        if self.ticks.is_multiple_of(30) {
+            self.refresh_addrs();
+        }
         for (s, i) in self
             .list
             .iter_mut()
@@ -103,6 +116,15 @@ impl Nets {
         self.seen.retain(|i| i.physical || i.cur.is_some());
     }
 
+    /// Reads the system's addresses again. Never under a fixture root.
+    fn refresh_addrs(&mut self) {
+        if !self.live {
+            return;
+        }
+        calls::addresses(&mut self.addrs);
+        attach(&mut self.list, &self.addrs);
+    }
+
     /// Rebuilds the list only when the physical interfaces present have changed.
     fn sync_list(&mut self) {
         let same = self
@@ -120,9 +142,24 @@ impl Nets {
                     name: i.name.clone(),
                     rx_bps: None,
                     tx_bps: None,
+                    addrs: Vec::new(),
                 })
                 .collect();
+            attach(&mut self.list, &self.addrs);
         }
+    }
+}
+
+/// Gives each listed interface the addresses the system reported for it.
+fn attach(list: &mut [NetSample], addrs: &[(String, String)]) {
+    for s in list.iter_mut() {
+        s.addrs.clear();
+        s.addrs.extend(
+            addrs
+                .iter()
+                .filter(|(n, _)| *n == s.name)
+                .map(|(_, a)| a.clone()),
+        );
     }
 }
 
@@ -161,6 +198,36 @@ mod tests {
         let eth = list.iter().find(|n| n.name == "enp3s0").expect("enp3s0");
         assert_eq!(eth.rx_bps, Some(0));
         assert_eq!(eth.tx_bps, Some(0));
+    }
+
+    #[test]
+    fn addresses_are_attached_by_name_and_not_read_under_a_fixture() {
+        let mut list = vec![
+            NetSample {
+                name: "enp3s0".into(),
+                rx_bps: None,
+                tx_bps: None,
+                addrs: Vec::new(),
+            },
+            NetSample {
+                name: "wlan0".into(),
+                rx_bps: None,
+                tx_bps: None,
+                addrs: Vec::new(),
+            },
+        ];
+        let addrs = vec![
+            ("enp3s0".to_string(), "192.0.2.10".to_string()),
+            ("enp3s0".to_string(), "2001:db8::10".to_string()),
+            ("lo".to_string(), "127.0.0.1".to_string()),
+        ];
+        attach(&mut list, &addrs);
+        assert_eq!(list[0].addrs, ["192.0.2.10", "2001:db8::10"]);
+        assert!(list[1].addrs.is_empty());
+        assert!(Nets::open(&root())
+            .read()
+            .iter()
+            .all(|n| n.addrs.is_empty()));
     }
 
     #[test]

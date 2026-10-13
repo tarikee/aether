@@ -19,6 +19,10 @@ struct Whole {
     prev: Option<(u64, u64)>,
     cur: Option<(u64, u64)>,
     rate: Option<(u64, u64)>,
+    /// The I/O time in ms at the last reading and now, and the busy percent between them.
+    busy_prev: Option<u64>,
+    busy_cur: Option<u64>,
+    busy: Option<f32>,
 }
 
 /// The disk source, with its files kept open.
@@ -62,6 +66,7 @@ impl Disks {
 
         for w in &mut self.wholes {
             w.cur = None;
+            w.busy_cur = None;
         }
         if let Some(f) = self.stats.as_mut() {
             for line in lines(f.read()) {
@@ -71,17 +76,22 @@ impl Disks {
                 let (Some(read), Some(written)) = (it.nth(2), it.nth(3)) else {
                     continue;
                 };
+                // Field 13 (ms spent doing I/O), two fields after the one just taken.
+                let busy = it.nth(2).and_then(num);
                 let (Some(read), Some(written)) = (num(read), num(written)) else {
                     continue;
                 };
                 if let Some(w) = self.wholes.iter_mut().find(|w| w.name.as_bytes() == name) {
                     w.cur = Some((read.saturating_mul(512), written.saturating_mul(512)));
+                    w.busy_cur = busy;
                 }
             }
         }
         for w in &mut self.wholes {
             w.rate = rate(w.prev, w.cur, secs);
             w.prev = w.cur;
+            w.busy = busy_pct(w.busy_prev, w.busy_cur, secs);
+            w.busy_prev = w.busy_cur;
         }
 
         // A mount whose space cannot be read is left out, never shown as 0.
@@ -103,6 +113,7 @@ impl Disks {
             let r = whole_for(&d.dev, &self.wholes).and_then(|j| self.wholes[j].rate);
             d.read_bps = r.map(|p| p.0);
             d.write_bps = r.map(|p| p.1);
+            d.busy_pct = whole_for(&d.dev, &self.wholes).and_then(|j| self.wholes[j].busy);
         }
         &self.list
     }
@@ -134,6 +145,7 @@ impl Disks {
                 used: 0,
                 read_bps: None,
                 write_bps: None,
+                busy_pct: None,
             });
         }
         self.list = list;
@@ -160,6 +172,9 @@ fn scan_block(dir: &Path, wholes: &mut Vec<Whole>) {
                 prev: None,
                 cur: None,
                 rate: None,
+                busy_prev: None,
+                busy_cur: None,
+                busy: None,
             });
             added = true;
         }
@@ -178,8 +193,10 @@ pub(crate) fn mounts_from(buf: &[u8]) -> Vec<(String, String)> {
         let (Some(dev), Some(mnt)) = (it.next(), it.next()) else {
             continue;
         };
+        // ZFS datasets are named without `/dev/`; their type says they are kept too.
+        let zfs = it.next() == Some(&b"zfs"[..]);
         let dev = unescape(dev);
-        if !dev.starts_with("/dev/") || dev.starts_with("/dev/loop") {
+        if !(zfs || (dev.starts_with("/dev/") && !dev.starts_with("/dev/loop"))) {
             continue;
         }
         let mount = unescape(mnt);
@@ -234,6 +251,17 @@ fn whole_for(dev: &str, wholes: &[Whole]) -> Option<usize> {
         .map(|(i, _)| i)
 }
 
+/// Percent of the time a device was busy between two readings of its I/O time in ms, at
+/// most 100. `None` on the first reading, when the counter went back, or when no time passed.
+pub(crate) fn busy_pct(prev: Option<u64>, cur: Option<u64>, secs: Option<f64>) -> Option<f32> {
+    let (p, c, s) = (prev?, cur?, secs?);
+    if c < p || s <= 0.0 {
+        return None;
+    }
+    let pct = (c - p) as f64 / (s * 1000.0) * 100.0;
+    Some(pct.min(100.0) as f32)
+}
+
 /// Bytes per second between two readings of a running counter. `None` if the counter went
 /// back (the device was reset) or no time has passed.
 pub(crate) fn per_second(prev: u64, cur: u64, secs: f64) -> Option<u64> {
@@ -270,6 +298,9 @@ mod tests {
             prev: None,
             cur: None,
             rate: None,
+            busy_prev: None,
+            busy_cur: None,
+            busy: None,
         }
     }
 
@@ -281,6 +312,7 @@ mod tests {
             ("/dev/sda1", "/"),
             ("/dev/nvme0n1p2", "/data disk"),
             ("/dev/mapper/vg-home", "/home"),
+            ("tank/data", "/tank"),
         ];
         let want: Vec<(String, String)> = want
             .iter()
@@ -317,6 +349,10 @@ mod tests {
             Some((4000, 800))
         );
         assert_eq!(rate(Some((0, 0)), Some((512, 0)), None), None);
+        assert_eq!(busy_pct(Some(0), Some(500), Some(1.0)), Some(50.0));
+        assert_eq!(busy_pct(Some(0), Some(5000), Some(1.0)), Some(100.0));
+        assert_eq!(busy_pct(Some(900), Some(100), Some(1.0)), None);
+        assert_eq!(busy_pct(None, Some(100), Some(1.0)), None);
     }
 
     #[test]
@@ -330,11 +366,13 @@ mod tests {
         assert!(first.iter().any(|d| d.mount == "/"));
         assert!(first.iter().all(|d| d.total > 0));
         assert!(first.iter().all(|d| d.read_bps.is_none()));
+        assert!(first.iter().all(|d| d.busy_pct.is_none()));
         std::thread::sleep(Duration::from_millis(5));
         let second = disks.read().to_vec();
         let sda1 = second.iter().find(|d| d.dev == "/dev/sda1").expect("sda1");
         assert_eq!(sda1.read_bps, Some(0));
         assert_eq!(sda1.write_bps, Some(0));
+        assert_eq!(sda1.busy_pct, Some(0.0));
         if let Some(home) = second.iter().find(|d| d.dev == "/dev/mapper/vg-home") {
             assert_eq!(home.read_bps, None);
         }
