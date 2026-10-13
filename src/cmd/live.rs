@@ -287,6 +287,9 @@ mod tests {
             flat: false,
             all: false,
             only: None,
+            tree: false,
+            disks: None,
+            nets: None,
         };
         order(v, &view, &|p| key(p, by));
     }

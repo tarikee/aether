@@ -1,6 +1,7 @@
 //! The text view for people: one reading, sorted and grouped as the view asks.
 
 use crate::cli::{compare, Keys, Sort, View};
+use crate::out::tree;
 use aether::sys::{
     BatterySample, CpuSample, DiskSample, GpuSample, HostSample, MemSample, NetSample, Proc,
     Sensor, SensorKind,
@@ -39,10 +40,10 @@ pub fn write(
         sensors(out, &reading.sensors);
     }
     if shown(view, "disk") {
-        disks(out, &reading.disks);
+        disks(out, &reading.disks, view);
     }
     if shown(view, "net") {
-        nets(out, &reading.nets);
+        nets(out, &reading.nets, view);
     }
     if shown(view, "battery") {
         battery(out, reading.battery.as_ref());
@@ -75,7 +76,15 @@ fn host(out: &mut Vec<u8>, h: &HostSample) {
 
 fn cpu(out: &mut Vec<u8>, c: &CpuSample) {
     let ghz = match c.mhz {
-        Some(mhz) => format!("{:.2} GHz", f64::from(mhz) / 1000.0),
+        Some(mhz) => match (c.threads_mhz.iter().min(), c.threads_mhz.iter().max()) {
+            (Some(lo), Some(hi)) => format!(
+                "{:.2} GHz ({:.2} to {:.2})",
+                f64::from(mhz) / 1000.0,
+                f64::from(*lo) / 1000.0,
+                f64::from(*hi) / 1000.0
+            ),
+            _ => format!("{:.2} GHz", f64::from(mhz) / 1000.0),
+        },
         None => "-".to_string(),
     };
     let load = match c.load {
@@ -84,7 +93,12 @@ fn cpu(out: &mut Vec<u8>, c: &CpuSample) {
     };
     let pct = opt_f32(c.pct, 1, "%");
     let temp = opt_f32(c.temp_c, 1, " °C");
-    line(out, "cpu", &format!("{pct}  {ghz}  {temp}  {load}"));
+    let power = opt_f32(c.power_w, 1, " W");
+    line(
+        out,
+        "cpu",
+        &format!("{pct}  {ghz}  {temp}  {power}  {load}"),
+    );
     if !c.threads.is_empty() {
         let each: Vec<String> = c.threads.iter().map(|t| format!("{t:.0}")).collect();
         line(out, "", &format!("threads {}", each.join(" ")));
@@ -147,33 +161,42 @@ fn sensors(out: &mut Vec<u8>, sensors: &[Sensor]) {
     }
 }
 
-fn disks(out: &mut Vec<u8>, disks: &[DiskSample]) {
-    if disks.is_empty() {
-        line(out, "disk", "-");
-    }
-    for (i, d) in disks.iter().enumerate() {
-        let label = if i == 0 { "disk" } else { "" };
+fn disks(out: &mut Vec<u8>, disks: &[DiskSample], view: &View) {
+    let mut first = true;
+    for d in disks.iter().filter(|d| view.shows_disk(&d.mount)) {
+        let label = if first { "disk" } else { "" };
+        first = false;
         let content = format!(
-            "{}  {}  {} of {}  read {}  write {}",
+            "{}  {}  {} of {}  read {}  write {}  busy {}",
             d.mount,
             d.dev,
             bytes(d.used),
             bytes(d.total),
             rate(d.read_bps),
-            rate(d.write_bps)
+            rate(d.write_bps),
+            opt_f32(d.busy_pct, 0, "%")
         );
         line(out, label, &content);
     }
+    if first {
+        line(out, "disk", "-");
+    }
 }
 
-fn nets(out: &mut Vec<u8>, nets: &[NetSample]) {
-    if nets.is_empty() {
-        line(out, "net", "-");
-    }
-    for (i, n) in nets.iter().enumerate() {
-        let label = if i == 0 { "net" } else { "" };
-        let content = format!("{}  down {}  up {}", n.name, rate(n.rx_bps), rate(n.tx_bps));
+fn nets(out: &mut Vec<u8>, nets: &[NetSample], view: &View) {
+    let mut first = true;
+    for n in nets.iter().filter(|n| view.shows_net(&n.name)) {
+        let label = if first { "net" } else { "" };
+        first = false;
+        let mut content = format!("{}  down {}  up {}", n.name, rate(n.rx_bps), rate(n.tx_bps));
+        for addr in &n.addrs {
+            content.push_str("  ");
+            content.push_str(addr);
+        }
         line(out, label, &content);
+    }
+    if first {
+        line(out, "net", "-");
     }
 }
 
@@ -314,15 +337,35 @@ fn procs(
     room: Option<usize>,
     rank: &dyn Fn(&Proc) -> f64,
 ) {
-    let grouped = !view.flat;
+    let grouped = !view.flat && !view.tree;
     let mut rows: Vec<Row> = procs.iter().map(|p| Row::of(p, rank(p))).collect();
     if grouped {
         rows = group(rows);
     }
-    rows.sort_by(|a, b| compare(view, &a.keys(), &b.keys()));
+    // A tree is single processes, so rows[i] is procs[i] here and the tree can order by index.
+    let mut marks: Vec<String> = Vec::new();
+    if view.tree {
+        let mut tree = tree::shared();
+        tree.build(procs, |a, b| {
+            compare(view, &rows[a].keys(), &rows[b].keys())
+        });
+        rows = tree
+            .rows()
+            .iter()
+            .map(|r| {
+                let mut mark = String::new();
+                tree.draw(r, &mut mark);
+                marks.push(mark);
+                Row::of(&procs[r.index], rank(&procs[r.index]))
+            })
+            .collect();
+    } else {
+        rows.sort_by(|a, b| compare(view, &a.keys(), &b.keys()));
+    }
     let total = rows.len();
     if let Some(room) = room {
         rows.truncate(room);
+        marks.truncate(room);
     }
     let head: Vec<String> = if grouped {
         [
@@ -339,9 +382,15 @@ fn procs(
         .map(|s| s.to_string())
         .collect()
     };
-    let body: Vec<Vec<String>> = rows.iter().map(|r| cells(r, grouped)).collect();
+    let body: Vec<Vec<String>> = rows
+        .iter()
+        .enumerate()
+        .map(|(i, r)| cells(r, grouped, marks.get(i).map_or("", String::as_str)))
+        .collect();
     let how = if grouped {
         "grouped by app"
+    } else if view.tree {
+        "as a tree"
     } else {
         "single processes"
     };
@@ -358,7 +407,7 @@ fn procs(
 }
 
 /// The cells of one row, in the order of the table's header.
-fn cells(r: &Row, grouped: bool) -> Vec<String> {
+fn cells(r: &Row, grouped: bool, mark: &str) -> Vec<String> {
     let cpu = opt_f32(r.cpu, 1, "");
     let gpu = opt_f32(r.gpu, 1, "");
     let vram = opt_bytes(r.vram);
@@ -380,7 +429,7 @@ fn cells(r: &Row, grouped: bool) -> Vec<String> {
         let pid = r.pid.map_or_else(|| "-".to_string(), |p| p.to_string());
         vec![
             pid,
-            r.name.clone(),
+            format!("{mark}{}", r.name),
             r.threads.to_string(),
             cpu,
             mem,
@@ -486,11 +535,14 @@ mod tests {
 
     fn view(only: Option<&[&str]>, flat: bool, by: Sort) -> View {
         View {
+            disks: None,
+            nets: None,
             by,
             reverse: false,
             steady: false,
             filter: None,
             flat,
+            tree: false,
             all: false,
             only: only.map(|l| l.iter().map(|s| s.to_string()).collect()),
         }
@@ -545,6 +597,8 @@ mod tests {
                 threads: 8,
             },
             cpu: CpuSample {
+                threads_mhz: vec![],
+                power_w: None,
                 pct: Some(42.5),
                 threads: vec![10.0, 75.0],
                 mhz: Some(3200),
@@ -557,7 +611,7 @@ mod tests {
         assert_eq!(
             text,
             "aether  up 12m 34s  8 threads\n\
-             cpu     42.5%  3.20 GHz  61.0 °C  load 1.00 0.50 0.25\n\
+             cpu     42.5%  3.20 GHz  61.0 °C  -  load 1.00 0.50 0.25\n\
              \x20       threads 10 75\n"
         );
     }
@@ -569,7 +623,7 @@ mod tests {
             &r,
             &view(Some(&["cpu", "battery", "gpu"]), false, Sort::Cpu),
         );
-        assert!(text.contains("cpu     -  -  -  load -\n"), "{text}");
+        assert!(text.contains("cpu     -  -  -  -  load -\n"), "{text}");
         assert!(text.contains("battery -\n"), "{text}");
         assert!(text.contains("gpu     -\n"), "{text}");
     }
@@ -597,6 +651,39 @@ mod tests {
         let ff: Vec<&str> = lines[3].split_whitespace().collect();
         assert_eq!(ff, ["firefox", "2", "6.5", "150", "B", "-", "-", "-", "-"]);
         assert_eq!(lines.len(), 4);
+    }
+
+    #[test]
+    fn a_tree_orders_siblings_by_the_view_and_a_missing_parent_is_a_root() {
+        let kids = vec![
+            proc(5, "alpha", 1.0, 1),
+            Proc {
+                ppid: 5,
+                ..proc(6, "beta", 1.0, 1)
+            },
+            Proc {
+                ppid: 5,
+                ..proc(7, "gamma", 1.0, 1)
+            },
+            Proc {
+                ppid: 99,
+                ..proc(8, "delta", 1.0, 1)
+            },
+        ];
+        let places = |reverse: bool| {
+            let mut v = view(None, false, Sort::Name);
+            v.tree = true;
+            v.reverse = reverse;
+            let r = Reading {
+                procs: kids.clone(),
+                ..Reading::default()
+            };
+            let text = render(&r, &v);
+            ["alpha", "beta", "gamma", "delta"].map(|n| text.find(n).unwrap_or(usize::MAX))
+        };
+        let (fwd, rev) = (places(false), places(true));
+        assert!(fwd.iter().all(|&at| at != usize::MAX));
+        assert_eq!(fwd[1] < fwd[2], !(rev[1] < rev[2]));
     }
 
     #[test]
