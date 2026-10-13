@@ -1,0 +1,3 @@
+rchar: 9000000
+read_bytes: 8192000
+write_bytes: 3072000
