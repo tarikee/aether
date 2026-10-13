@@ -6,3 +6,4 @@ sysfs /sys sysfs rw,nosuid,nodev 0 0
 /dev/nvme0n1p2 /data\040disk xfs rw 0 0
 tmpfs /run tmpfs rw 0 0
 /dev/mapper/vg-home /home ext4 rw 0 0
+tank/data /tank zfs rw 0 0
