@@ -17,6 +17,8 @@ pub enum Sort {
 pub struct View {
     pub by: Sort,
     pub flat: bool,
+    /// Each single process under its parent (implies single processes).
+    pub tree: bool,
     pub all: bool,
     /// The parts to show (`cpu`, `mem`, ...); `None` shows everything.
     pub only: Option<Vec<String>>,
@@ -96,6 +98,7 @@ Options:
   -i, --interval SECS    seconds between live readings (default 1)
   --by cpu|mem|gpu|disk  sort the processes (default cpu)
   --flat                 single processes, not grouped by app
+  --tree                 single processes, each under its parent
   --all                  print every row, past the screen's height
   --only LIST            only these parts, e.g. cpu,mem (default: everything)
   --disk MOUNT[,MOUNT]   only these disks, by mount point (default: every disk)
@@ -136,6 +139,7 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
         view: View {
             by: Sort::Cpu,
             flat: false,
+            tree: false,
             all: false,
             only: None,
             disks: None,
@@ -152,6 +156,7 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
             "--once" => p.once = true,
             "--json" => p.json = true,
             "--flat" => p.view.flat = true,
+            "--tree" => p.view.tree = true,
             "--all" => p.view.all = true,
             "--force" => p.force = true,
             "-y" | "--yes" => p.yes = true,
