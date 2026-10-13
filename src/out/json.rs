@@ -298,6 +298,9 @@ mod tests {
     fn render_with(r: &Reading, only: Option<&[&str]>) -> String {
         let view = View {
             by: Sort::Cpu,
+            reverse: false,
+            steady: false,
+            filter: None,
             flat: false,
             all: false,
             only: only.map(|l| l.iter().map(|s| s.to_string()).collect()),

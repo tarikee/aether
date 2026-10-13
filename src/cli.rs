@@ -1,5 +1,6 @@
 //! Arguments and help, by hand. The grammar is written once, here.
 
+use std::cmp::Ordering;
 use std::io::Write;
 use std::process::ExitCode;
 
@@ -10,12 +11,65 @@ pub enum Sort {
     Mem,
     Gpu,
     Disk,
+    Pid,
+    User,
+    Threads,
+    Name,
+    Age,
+}
+
+impl Sort {
+    /// Whether the key starts from the biggest (or the newest) value; the others start from
+    /// the smallest, so `pid`, `user` and `name` read A to Z.
+    pub fn largest_first(self) -> bool {
+        !matches!(self, Sort::Pid | Sort::User | Sort::Name)
+    }
+
+    /// Whether `--steady` smooths this key (the ones that move every tick).
+    pub fn smooths(self) -> bool {
+        matches!(self, Sort::Cpu | Sort::Gpu | Sort::Disk)
+    }
+}
+
+/// What a row is ordered by: the fields of one process, or of one group.
+pub struct Keys<'a> {
+    pub pid: u32,
+    pub uid: u32,
+    pub threads: u32,
+    pub started: u64,
+    pub name: &'a str,
+    /// The number for the numeric keys (missing is -1).
+    pub rank: f64,
+}
+
+/// Compares two rows in the order the view asks for. Equal values fall back to the pid, so
+/// rows never swap places for nothing; `--reverse` turns the order round (pid stays ascending).
+pub fn compare(view: &View, a: &Keys, b: &Keys) -> Ordering {
+    let ord = match view.by {
+        Sort::Pid => a.pid.cmp(&b.pid),
+        Sort::User => a.uid.cmp(&b.uid),
+        Sort::Threads => a.threads.cmp(&b.threads),
+        Sort::Name => a.name.cmp(b.name),
+        Sort::Age => a.started.cmp(&b.started),
+        Sort::Cpu | Sort::Mem | Sort::Gpu | Sort::Disk => a.rank.total_cmp(&b.rank),
+    };
+    let ord = if view.by.largest_first() {
+        ord.reverse()
+    } else {
+        ord
+    };
+    let ord = if view.reverse { ord.reverse() } else { ord };
+    ord.then(a.pid.cmp(&b.pid))
 }
 
 /// What a view shows and how.
 #[derive(Clone, Debug, PartialEq)]
 pub struct View {
     pub by: Sort,
+    pub reverse: bool,
+    pub steady: bool,
+    /// Only processes whose name or command line contains this (ASCII case ignored).
+    pub filter: Option<String>,
     pub flat: bool,
     pub all: bool,
     /// The parts to show (`cpu`, `mem`, ...); `None` shows everything.
@@ -55,7 +109,7 @@ pub const HELP: &str = "\
 aether: the whole machine as numbers.
 
 Usage:
-  aether [-i SECS] [--by cpu|mem|gpu|disk] [--flat] [--all] [--only LIST] [--json]
+  aether [-i SECS] [--by KEY] [--reverse] [--steady] [--filter TEXT] [--flat] [--all] [--only LIST] [--json]
       live: every vital and every process, rewritten in place
   aether --once [same options]
       one reading, then exit
@@ -72,7 +126,12 @@ Usage:
 
 Options:
   -i, --interval SECS    seconds between live readings (default 1)
-  --by cpu|mem|gpu|disk  sort the processes (default cpu)
+  --by KEY               sort the processes: cpu (default), mem, gpu, disk, pid, user,
+                         threads, name, age (newest first; user is the uid)
+  --reverse              turn the order round
+  --steady               with --by cpu, gpu or disk: order by a smoothed value, so rows
+                         do not jump every tick (the numbers shown stay raw)
+  --filter TEXT          only processes whose name or command line contains TEXT
   --flat                 single processes, not grouped by app
   --all                  print every row, past the screen's height
   --only LIST            only these parts, e.g. cpu,mem (default: everything)
@@ -111,6 +170,9 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
         yes: false,
         view: View {
             by: Sort::Cpu,
+            reverse: false,
+            steady: false,
+            filter: None,
             flat: false,
             all: false,
             only: None,
@@ -126,6 +188,15 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
             "--once" => p.once = true,
             "--json" => p.json = true,
             "--flat" => p.view.flat = true,
+            "--reverse" => p.view.reverse = true,
+            "--steady" => p.view.steady = true,
+            "--filter" => {
+                let text = value(&mut it, a)?;
+                if text.is_empty() {
+                    return Err("--filter needs some text".to_string());
+                }
+                p.view.filter = Some(text.to_string());
+            }
             "--all" => p.view.all = true,
             "--force" => p.force = true,
             "-y" | "--yes" => p.yes = true,
@@ -144,7 +215,16 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
                     "mem" => Sort::Mem,
                     "gpu" => Sort::Gpu,
                     "disk" => Sort::Disk,
-                    other => return Err(format!("--by takes cpu, mem, gpu or disk, not {other}")),
+                    "pid" => Sort::Pid,
+                    "user" => Sort::User,
+                    "threads" => Sort::Threads,
+                    "name" => Sort::Name,
+                    "age" => Sort::Age,
+                    other => {
+                        return Err(format!(
+                            "--by takes cpu, mem, gpu, disk, pid, user, threads, name or age, not {other}"
+                        ))
+                    }
                 };
             }
             "--only" => {
@@ -220,5 +300,51 @@ mod tests {
         assert!(parse(&args("--by disk2")).is_err());
         assert!(parse(&args("-i 0")).is_err());
         assert!(parse(&args("--nope")).is_err());
+    }
+
+    #[test]
+    fn filter_reverse_steady_and_the_new_keys_are_read() {
+        let p = parse(&args("--once --by name --reverse --steady --filter Aether")).unwrap();
+        assert_eq!(p.view.by, Sort::Name);
+        assert!(p.view.reverse && p.view.steady);
+        assert_eq!(p.view.filter.as_deref(), Some("Aether"));
+        assert!(parse(&["--filter".to_string(), String::new()]).is_err());
+        assert!(parse(&args("--filter")).is_err());
+        assert_eq!(parse(&args("--by age")).unwrap().view.by, Sort::Age);
+    }
+
+    fn keys(pid: u32, name: &str, rank: f64) -> Keys<'_> {
+        Keys {
+            pid,
+            uid: 0,
+            threads: 1,
+            started: u64::from(pid),
+            name,
+            rank,
+        }
+    }
+
+    fn view(by: Sort, reverse: bool) -> View {
+        View {
+            by,
+            reverse,
+            steady: false,
+            filter: None,
+            flat: false,
+            all: false,
+            only: None,
+        }
+    }
+
+    #[test]
+    fn equal_values_fall_back_to_pid_and_reverse_turns_the_order() {
+        let (a, b) = (keys(5, "b", 1.0), keys(3, "a", 1.0));
+        assert_eq!(compare(&view(Sort::Cpu, false), &a, &b), Ordering::Greater);
+        assert_eq!(compare(&view(Sort::Name, false), &a, &b), Ordering::Greater);
+        assert_eq!(compare(&view(Sort::Name, true), &a, &b), Ordering::Less);
+        assert_eq!(compare(&view(Sort::Age, false), &a, &b), Ordering::Less);
+        let c = keys(9, "c", 4.0);
+        assert_eq!(compare(&view(Sort::Cpu, false), &c, &a), Ordering::Less);
+        assert_eq!(compare(&view(Sort::Pid, false), &a, &b), Ordering::Greater);
     }
 }
