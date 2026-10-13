@@ -10,6 +10,8 @@ use aether::sys::{
     BatterySample, CpuSample, DiskSample, GpuSample, MemSample, NetSample, Proc, Sensor, SensorKind,
 };
 use aether::Reading;
+use std::collections::HashMap;
+use std::rc::Rc;
 
 /// The state the frame is drawn from. The live loop owns it and hands it to `render`.
 #[derive(Clone, Debug, PartialEq)]
@@ -21,10 +23,29 @@ pub struct Screen {
     pub colour: bool,
     /// The process row the marker is on, by index into the rows; `None` shows no marker.
     pub selected: Option<usize>,
-    /// The first process row on the screen.
+    /// The first process row on the screen; `render` moves it to keep the marker in view.
     pub scroll: usize,
     /// Seconds between readings: the title's interval, and what a history line spans.
     pub interval_s: f64,
+    /// Whether the list is paused (shown in the title).
+    pub paused: bool,
+    /// What is shown in place of the process table.
+    pub overlay: Overlay,
+    /// Whether the keys are on: the last line names them, else it says how to leave.
+    pub keys: bool,
+    /// The last line in place of the keys: the filter being typed, or a question.
+    pub prompt: Option<String>,
+    /// The user names by uid, read once from the password file.
+    pub users: Rc<HashMap<u32, String>>,
+}
+
+/// What the screen shows in place of the process table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Overlay {
+    Table,
+    Help,
+    Sensors,
+    Detail,
 }
 
 /// The four colour roles; plain text needs none.
@@ -42,16 +63,40 @@ const MARGIN: usize = 1;
 const INDENT: usize = 2;
 /// The most cells of one history line.
 const HISTORY_MAX: usize = 60;
+/// The room a history line leaves after its field for its label ("  last 60 s").
+const LABEL_ROOM: usize = 14;
 /// Rows the process table needs below the sensors: its rule, its header, 15 rows and the key line.
 const TABLE_MIN: usize = 15 + 3;
-/// Lines of sensors at most.
+/// Lines of sensors at most in the normal view.
 const SENSOR_LINES: usize = 3;
 /// Disk and interface rows at most before "+N more".
 const DISKS_MAX: usize = 4;
 const NETS_MAX: usize = 3;
-const KEY_LINE: &str = "ctrl-c to leave";
+const KEYS_LINE: &str =
+    "↑↓ select   ←→ sort   / filter   t tree   k end   space pause   ? keys   q quit";
+const LEAVE_LINE: &str = "ctrl-c to leave";
 const EIGHTHS: [&str; 8] = [" ", "▏", "▎", "▍", "▌", "▋", "▊", "▉"];
 const LEVELS: [&str; 8] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
+const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+/// The keys, for the help view: the keys, then what they do.
+const HELP: [(&str, &str); 13] = [
+    ("↑ ↓  PgUp PgDn", "select a process"),
+    ("Home End", "the first or the last one"),
+    ("← →", "the sort key"),
+    ("r", "reverse the order"),
+    ("t", "tree (f: flat; grouped is the default)"),
+    (
+        "/",
+        "filter by name or command line; Enter keeps it, Esc clears it",
+    ),
+    ("space", "pause the list"),
+    ("Enter", "the selected process in full"),
+    ("k  K", "end it, or force it (then y or n)"),
+    ("+  -", "the interval"),
+    ("s", "every sensor, in place of the table"),
+    ("?", "this help"),
+    ("q", "quit"),
+];
 
 /// One line of the frame: its text with its colour codes, and the width it takes. It never
 /// grows past `cap`; a piece that does not fit is cut.
@@ -72,7 +117,7 @@ impl Line {
         }
     }
 
-    /// A body line: the indent, then the items, each after two spaces.
+    /// A body line: the indent, then the items, each after three spaces.
     fn body(cap: usize, colour: bool) -> Line {
         let mut l = Line::new(cap, colour);
         l.plain(&" ".repeat(INDENT));
@@ -125,10 +170,10 @@ impl Line {
         self.push(&" ".repeat(n), Role::Plain);
     }
 
-    /// Two spaces between items, not before the first one (the body's indent is not an item).
+    /// Three spaces between items, not before the first one (the body's indent is not an item).
     fn sep(&mut self) {
         if self.width > INDENT {
-            self.gap(2);
+            self.gap(3);
         }
     }
 
@@ -161,12 +206,13 @@ impl Line {
 }
 
 /// Draws one frame into `out`: the synchronised-output marks, the cursor home, each line ended
-/// with erase-to-end-of-line, and the rest of the screen erased after the last one.
+/// with erase-to-end-of-line, and the rest of the screen erased after the last one. `s` keeps
+/// the scroll that keeps the marker in view.
 pub fn render(
     out: &mut Vec<u8>,
     r: &Reading,
     v: &View,
-    s: &Screen,
+    s: &mut Screen,
     hist: &History,
     tree: &mut Tree,
     rank: &dyn Fn(&Proc) -> f64,
@@ -205,20 +251,34 @@ pub fn render(
     }
     // The upper sections give way on a short terminal, so the table keeps its rows.
     lines.truncate(s.rows.saturating_sub(4));
-    if v.shows("sensors") {
-        let room = s.rows.saturating_sub(lines.len());
-        lines.extend(sensor_block(&r.sensors, room, cap, colour));
+    match s.overlay {
+        Overlay::Table => {
+            let room = s.rows.saturating_sub(lines.len());
+            if v.shows("sensors") && !r.sensors.is_empty() && room > 1 + TABLE_MIN {
+                let max = (room - 1 - TABLE_MIN).min(SENSOR_LINES);
+                lines.extend(sensor_block(&r.sensors, max, cap, colour));
+            }
+            if v.shows("procs") {
+                lines.extend(table(r, v, s, tree, rank, cap, colour));
+            }
+        }
+        Overlay::Sensors => {
+            let max = s.rows.saturating_sub(lines.len() + 2);
+            lines.extend(sensor_block(&r.sensors, max, cap, colour));
+        }
+        Overlay::Help => lines.extend(help_block(cap, colour)),
+        Overlay::Detail => lines.extend(table(r, v, s, tree, rank, cap, colour)),
     }
-    if v.shows("procs") {
-        lines.extend(table(r, v, s, tree, rank, cap, colour));
-    }
-    // The last line is the key line; a screen too short for the rest keeps only what fits.
+    // The last line is the keys (or the prompt); a screen too short for the rest keeps only what fits.
     lines.truncate(s.rows.saturating_sub(1));
     while lines.len() < s.rows.saturating_sub(1) {
         lines.push(Line::new(cap, colour));
     }
     let mut key = Line::new(cap, colour);
-    key.push(KEY_LINE, Role::Dim);
+    match &s.prompt {
+        Some(p) => key.plain(p),
+        None => key.push(if s.keys { KEYS_LINE } else { LEAVE_LINE }, Role::Dim),
+    }
     lines.push(key);
     if s.rows == 0 {
         lines.clear();
@@ -274,6 +334,84 @@ fn temp_role(t: f32) -> Role {
     }
 }
 
+/// A number of up to three significant digits with no trailing ".0": 9.8, 15.5, 212, 1.1.
+fn sig3(v: f64) -> String {
+    if v >= 99.95 {
+        return format!("{v:.0}");
+    }
+    let s = format!("{v:.1}");
+    match s.strip_suffix(".0") {
+        Some(whole) => whole.to_string(),
+        None => s,
+    }
+}
+
+/// A byte count as its number and its unit: `9.8` and `GiB`.
+fn size_parts(n: u64) -> (String, &'static str) {
+    if n < 1024 {
+        return (n.to_string(), UNITS[0]);
+    }
+    let mut v = n as f64;
+    let mut i = 0;
+    while v >= 1024.0 && i < UNITS.len() - 1 {
+        v /= 1024.0;
+        i += 1;
+    }
+    (sig3(v), UNITS[i])
+}
+
+/// A size or a rate as one item: `400 MiB`, `3.2 MiB/s` (`suffix` is `/s` for a rate).
+fn size_item(l: &mut Line, n: u64, suffix: &str, role: Role) {
+    let (num, unit) = size_parts(n);
+    l.push(&num, role);
+    l.push(" ", Role::Dim);
+    l.push(unit, Role::Dim);
+    l.push(suffix, Role::Dim);
+}
+
+/// Two sizes: a pair with one unit names it once (`9.8 of 15.5 GiB`), else both (`400 MiB of 16 GiB`).
+fn size_pair(l: &mut Line, a: u64, b: u64, suffix: &str) {
+    let (na, ua) = size_parts(a);
+    let (nb, ub) = size_parts(b);
+    l.push(&na, Role::Plain);
+    if ua != ub {
+        l.push(" ", Role::Dim);
+        l.push(ua, Role::Dim);
+    }
+    l.push(" of ", Role::Dim);
+    l.push(&nb, Role::Plain);
+    l.push(" ", Role::Dim);
+    l.push(ub, Role::Dim);
+    l.push(suffix, Role::Dim);
+}
+
+/// A percentage in a summary line or beside a bar: whole.
+fn pct_item(l: &mut Line, p: f32, role: Role) {
+    l.push(&format!("{p:.0}"), role);
+    l.push("%", Role::Dim);
+}
+
+/// A percentage in the process table: one decimal under 10, whole from 10.
+fn proc_pct(x: f32) -> String {
+    if x < 9.95 {
+        format!("{x:.1}%")
+    } else {
+        format!("{x:.0}%")
+    }
+}
+
+/// Seconds as "up 3d 04:12", or "up 04:12" under a day.
+fn uptime_short(s: u64) -> String {
+    let d = s / 86_400;
+    let h = (s % 86_400) / 3_600;
+    let m = (s % 3_600) / 60;
+    if d > 0 {
+        format!("up {d}d {h:02}:{m:02}")
+    } else {
+        format!("up {h:02}:{m:02}")
+    }
+}
+
 /// A bar of `cells` cells: full blocks, the fraction in eighths, the rest empty.
 fn bar(l: &mut Line, frac: f32, cells: usize, role: Role) {
     let fill = (frac.clamp(0.0, 1.0) * cells as f32).min(cells as f32);
@@ -289,7 +427,7 @@ fn bar(l: &mut Line, frac: f32, cells: usize, role: Role) {
 }
 
 /// A history line: one cell per value, oldest left. `top` is the scale's top; without one the
-/// highest value shown is the top.
+/// highest value shown is the top. The caller gives the whole field, blanks included.
 fn spark(l: &mut Line, vals: impl Iterator<Item = Option<f32>> + Clone, top: Option<f32>) {
     let top = top.unwrap_or_else(|| vals.clone().flatten().fold(0.0_f32, f32::max));
     let mut s = String::new();
@@ -309,7 +447,16 @@ fn spark(l: &mut Line, vals: impl Iterator<Item = Option<f32>> + Clone, top: Opt
     l.plain(&s);
 }
 
-/// A rule: the label in accent, the sub-title plain, the rest dashes, and the right text.
+/// A history field of `width` cells: `pad` blanks on the left, then the newest values.
+fn field(
+    newest: impl Iterator<Item = Option<f32>> + Clone,
+    pad: usize,
+) -> impl Iterator<Item = Option<f32>> + Clone {
+    std::iter::repeat_n(None::<f32>, pad).chain(newest)
+}
+
+/// A rule: the label in accent, the sub-title plain, the dashes, and the right text, followed by
+/// dashes to the margin.
 fn rule(cap: usize, colour: bool, label: &str, sub: &str, right: &str) -> Line {
     let mut l = Line::new(cap, colour);
     l.push("── ", Role::Dim);
@@ -319,27 +466,32 @@ fn rule(cap: usize, colour: bool, label: &str, sub: &str, right: &str) -> Line {
         l.plain(sub);
     }
     l.push(" ", Role::Dim);
-    let tail = if right.is_empty() {
-        String::new()
+    if right.is_empty() {
+        let fill = cap.saturating_sub(l.width);
+        l.push(&"─".repeat(fill), Role::Dim);
     } else {
-        format!(" {right} ")
-    };
-    let fill = cap.saturating_sub(l.width + tail.chars().count());
-    l.push(&"─".repeat(fill), Role::Dim);
-    l.push(&tail, Role::Dim);
+        let tail = format!(" {right} ");
+        let fill = cap.saturating_sub(l.width + tail.chars().count() + 3);
+        l.push(&"─".repeat(fill), Role::Dim);
+        l.push(&tail, Role::Dim);
+        l.push("───", Role::Dim);
+    }
     l
 }
 
 /// The title: the name on the left; on the right the battery (when there is one and it fits),
-/// the uptime, the threads and the interval.
+/// the uptime, the threads, `paused` and the interval.
 fn title(r: &Reading, s: &Screen, cap: usize) -> Line {
     let colour = s.colour;
     let mut right = Line::new(usize::MAX, colour);
-    right.push("up ", Role::Dim);
-    right.plain(&text::uptime(r.host.uptime_s));
+    right.plain(&uptime_short(r.host.uptime_s));
     right.gap(3);
     right.plain(&format!("{} threads", r.host.threads));
     right.gap(3);
+    if s.paused {
+        right.push("paused", Role::Warn);
+        right.gap(3);
+    }
     right.measure(&format!("{:.1} s", s.interval_s), Role::Plain);
     let mut bat = Line::new(usize::MAX, colour);
     if let Some(b) = &r.battery {
@@ -361,15 +513,16 @@ fn title(r: &Reading, s: &Screen, cap: usize) -> Line {
 
 fn battery_text(l: &mut Line, b: &BatterySample) {
     l.push("battery ", Role::Dim);
-    l.plain(&format!("{:.0}%", b.pct));
-    l.gap(2);
+    pct_item(l, b.pct, Role::Plain);
+    l.sep();
     l.plain(b.state);
     if let Some(p) = b.power_w {
-        l.gap(2);
-        l.measure(&format!("{p:.1} W"), Role::Plain);
+        l.sep();
+        l.plain(&format!("{p:.0}"));
+        l.push(" W", Role::Dim);
     }
     if let Some(m) = b.minutes_left {
-        l.gap(2);
+        l.sep();
         l.plain(&format!("{}h {:02}m left", m / 60, m % 60));
     }
 }
@@ -381,39 +534,38 @@ fn cpu_block(c: &CpuSample, hist: &History, s: &Screen, cap: usize, cells: usize
     let mut l = Line::body(cap, colour);
     if let Some(p) = c.pct {
         l.sep();
-        l.push(&format!("{p:.1}"), load_role(p));
-        l.push("%", Role::Dim);
+        pct_item(&mut l, p, load_role(p));
         l.sep();
         bar(&mut l, p / 100.0, cells, load_role(p));
     }
     if let Some(mhz) = c.mhz {
         l.sep();
-        l.measure(&format!("{:.2} GHz", f64::from(mhz) / 1000.0), Role::Plain);
+        l.plain(&format!("{:.1}", f64::from(mhz) / 1000.0));
+        l.push(" GHz", Role::Dim);
     }
     if let Some(t) = c.temp_c {
         l.sep();
-        l.measure(&format!("{t:.1} °C"), temp_role(t));
+        l.push(&format!("{t:.0}"), temp_role(t));
+        l.push(" °C", Role::Dim);
     }
     if let Some(w) = c.power_w {
         l.sep();
-        l.measure(&format!("{w:.1} W"), Role::Plain);
+        l.plain(&format!("{w:.0}"));
+        l.push(" W", Role::Dim);
     }
     if let Some([a, b, d]) = c.load {
         l.sep();
         l.push("load ", Role::Dim);
-        l.plain(&format!("{a:.2} {b:.2} {d:.2}"));
+        l.plain(&format!("{a:.1} {b:.1} {d:.1}"));
     }
     if l.width > INDENT {
         out.push(l);
     }
-    let n = hist
-        .cpu
-        .len()
-        .min(HISTORY_MAX)
-        .min(cap.saturating_sub(INDENT + 12));
+    let width = HISTORY_MAX.min(cap.saturating_sub(INDENT + LABEL_ROOM));
+    let n = hist.cpu.len().min(width);
     if n > 0 {
         let mut h = Line::body(cap, colour);
-        spark(&mut h, hist.cpu.newest(n), Some(100.0));
+        spark(&mut h, field(hist.cpu.newest(n), width - n), Some(100.0));
         h.gap(2);
         h.push(
             &format!("last {} s", (n as f64 * s.interval_s).round() as u64),
@@ -469,20 +621,16 @@ fn mem_block(m: &MemSample, cap: usize, cells: usize, colour: bool) -> Vec<Line>
     let mut out = vec![rule(cap, colour, "Memory", "", "")];
     let mut l = Line::body(cap, colour);
     let frac = m.used as f32 / m.total as f32;
-    l.measure(&text::bytes(m.used), Role::Plain);
-    l.push(" of ", Role::Dim);
-    l.measure(&text::bytes(m.total), Role::Plain);
+    size_pair(&mut l, m.used, m.total, "");
     l.sep();
     bar(&mut l, frac, cells, load_role(frac * 100.0));
     l.sep();
     l.push("cached ", Role::Dim);
-    l.measure(&text::bytes(m.cached), Role::Plain);
+    size_item(&mut l, m.cached, "", Role::Plain);
     if m.swap_total > 0 {
         l.sep();
         l.push("swap ", Role::Dim);
-        l.measure(&text::bytes(m.swap_used), Role::Plain);
-        l.push(" of ", Role::Dim);
-        l.measure(&text::bytes(m.swap_total), Role::Plain);
+        size_pair(&mut l, m.swap_used, m.swap_total, "");
     }
     out.push(l);
     out
@@ -492,8 +640,7 @@ fn gpu_block(g: &GpuSample, cap: usize, cells: usize, colour: bool) -> Vec<Line>
     let mut out = vec![rule(cap, colour, "GPU", &g.name, "")];
     let mut l = Line::body(cap, colour);
     if let Some(p) = g.pct {
-        l.push(&format!("{p:.0}"), load_role(p));
-        l.push("%", Role::Dim);
+        pct_item(&mut l, p, load_role(p));
         l.sep();
         bar(&mut l, p / 100.0, cells, load_role(p));
     }
@@ -501,28 +648,29 @@ fn gpu_block(g: &GpuSample, cap: usize, cells: usize, colour: bool) -> Vec<Line>
         (Some(u), Some(t)) => {
             l.sep();
             l.push("VRAM ", Role::Dim);
-            l.measure(&text::bytes(u), Role::Plain);
-            l.push(" of ", Role::Dim);
-            l.measure(&text::bytes(t), Role::Plain);
+            size_pair(&mut l, u, t, "");
         }
         (Some(u), None) => {
             l.sep();
             l.push("VRAM ", Role::Dim);
-            l.measure(&text::bytes(u), Role::Plain);
+            size_item(&mut l, u, "", Role::Plain);
         }
         _ => {}
     }
     if let Some(t) = g.temp_c {
         l.sep();
-        l.measure(&format!("{t:.0} °C"), temp_role(t));
+        l.push(&format!("{t:.0}"), temp_role(t));
+        l.push(" °C", Role::Dim);
     }
     if let Some(rpm) = g.fan_rpm {
         l.sep();
-        l.measure(&format!("{rpm} rpm"), Role::Plain);
+        l.plain(&rpm.to_string());
+        l.push(" rpm", Role::Dim);
     }
     if let Some(w) = g.power_w {
         l.sep();
-        l.measure(&format!("{w:.1} W"), Role::Plain);
+        l.plain(&format!("{w:.0}"));
+        l.push(" W", Role::Dim);
     }
     if l.width > INDENT {
         out.push(l);
@@ -543,9 +691,7 @@ fn disk_block(disks: &[DiskSample], v: &View, cap: usize, colour: bool) -> Vec<L
         let w = mount.chars().count();
         l.plain(&mount);
         l.gap(14 - w + 2);
-        l.measure(&text::bytes(d.used), Role::Plain);
-        l.push(" of ", Role::Dim);
-        l.measure(&text::bytes(d.total), Role::Plain);
+        size_pair(&mut l, d.used, d.total, "");
         if let Some(b) = d.busy_pct {
             l.sep();
             l.push("busy ", Role::Dim);
@@ -556,7 +702,7 @@ fn disk_block(disks: &[DiskSample], v: &View, cap: usize, colour: bool) -> Vec<L
             if let Some(x) = rate.filter(|x| *x > 0) {
                 l.sep();
                 l.push(label, Role::Dim);
-                l.measure(&text::rate(Some(x)), Role::Plain);
+                size_item(&mut l, x, "/s", Role::Plain);
             }
         }
         out.push(l);
@@ -569,7 +715,8 @@ fn disk_block(disks: &[DiskSample], v: &View, cap: usize, colour: bool) -> Vec<L
     out
 }
 
-/// The interfaces, at most three rows; the first one's history line (its down rate) under it.
+/// The interfaces, at most three rows; the first one's history line (its down rate) under it,
+/// in the field the name starts at.
 fn net_block(
     nets: &[NetSample],
     v: &View,
@@ -592,20 +739,17 @@ fn net_block(
         }
         l.sep();
         l.push("↓ ", Role::Dim);
-        l.measure(&text::rate(n.rx_bps), Role::Plain);
+        rate_or_dash(&mut l, n.rx_bps);
         l.sep();
         l.push("↑ ", Role::Dim);
-        l.measure(&text::rate(n.tx_bps), Role::Plain);
+        rate_or_dash(&mut l, n.tx_bps);
         out.push(l);
         if first == Some(n.name.as_str()) {
-            let k = hist
-                .down
-                .len()
-                .min(HISTORY_MAX)
-                .min(cap.saturating_sub(INDENT));
+            let width = HISTORY_MAX.min(cap.saturating_sub(INDENT));
+            let k = hist.down.len().min(width);
             if k > 0 {
                 let mut h = Line::body(cap, colour);
-                spark(&mut h, hist.down.newest(k), None);
+                spark(&mut h, field(hist.down.newest(k), width - k), None);
                 out.push(h);
             }
         }
@@ -616,6 +760,13 @@ fn net_block(
         out.push(l);
     }
     out
+}
+
+fn rate_or_dash(l: &mut Line, rate: Option<u64>) {
+    match rate {
+        Some(x) => size_item(l, x, "/s", Role::Plain),
+        None => l.plain("—"),
+    }
 }
 
 /// Two blocks side by side: the left one `lw` wide, two spaces, the right one.
@@ -637,13 +788,19 @@ fn beside(left: &[Line], right: &[Line], lw: usize, cap: usize, colour: bool) ->
     out
 }
 
-/// The sensors, hottest temperatures first, then fans, then power, as many columns as fit, at
-/// most three lines, and only while the process table keeps its rows. `room` is the lines left.
-fn sensor_block(sensors: &[Sensor], room: usize, cap: usize, colour: bool) -> Vec<Line> {
-    if sensors.is_empty() || room < 1 + TABLE_MIN + 1 {
+/// The sensors under a rule: hottest temperatures first, then fans, then power, as many columns
+/// as fit, at most `max_lines` lines. With none, a line says so.
+fn sensor_block(sensors: &[Sensor], max_lines: usize, cap: usize, colour: bool) -> Vec<Line> {
+    if max_lines == 0 {
         return Vec::new();
     }
-    let max_lines = (room - 1 - TABLE_MIN).min(SENSOR_LINES);
+    let mut out = vec![rule(cap, colour, "Sensors", "", "")];
+    if sensors.is_empty() {
+        let mut l = Line::body(cap, colour);
+        l.push("No sensors.", Role::Dim);
+        out.push(l);
+        return out;
+    }
     let mut list: Vec<&Sensor> = sensors.iter().collect();
     list.sort_by(|a, b| {
         kind_rank(a.kind)
@@ -654,9 +811,9 @@ fn sensor_block(sensors: &[Sensor], room: usize, cap: usize, colour: bool) -> Ve
         .iter()
         .map(|s| {
             let (value, role) = match s.kind {
-                SensorKind::Temp => (format!("{:.1} °C", s.value), temp_role(s.value)),
+                SensorKind::Temp => (format!("{:.0} °C", s.value), temp_role(s.value)),
                 SensorKind::Fan => (format!("{:.0} rpm", s.value), Role::Plain),
-                SensorKind::Power => (format!("{:.1} W", s.value), Role::Plain),
+                SensorKind::Power => (format!("{:.0} W", s.value), Role::Plain),
             };
             (format!("{} {}", s.chip, s.label), value, role)
         })
@@ -669,10 +826,6 @@ fn sensor_block(sensors: &[Sensor], room: usize, cap: usize, colour: bool) -> Ve
         .min(cap);
     let per_row = ((cap + 2) / (width + 2)).max(1);
     let lines = cells.len().div_ceil(per_row).min(max_lines);
-    if lines == 0 {
-        return Vec::new();
-    }
-    let mut out = vec![rule(cap, colour, "Sensors", "", "")];
     for row in 0..lines {
         let mut l = Line::body(cap, colour);
         for (j, (name, value, role)) in cells.iter().skip(row * per_row).take(per_row).enumerate() {
@@ -699,11 +852,25 @@ fn kind_rank(kind: SensorKind) -> u8 {
     }
 }
 
-/// The process table: its rule, its header and the rows that fit down to the key line.
+/// The keys, one per line, for the help view.
+fn help_block(cap: usize, colour: bool) -> Vec<Line> {
+    let mut out = vec![rule(cap, colour, "Keys", "", "")];
+    for (key, what) in HELP {
+        let mut l = Line::body(cap, colour);
+        l.plain(key);
+        l.pad_to(INDENT + 18);
+        l.push(what, Role::Dim);
+        out.push(l);
+    }
+    out
+}
+
+/// The process table: its rule, its header and the rows that fit down to the key line. In the
+/// detail view, the selected process in full instead of the rows.
 fn table(
     r: &Reading,
     v: &View,
-    s: &Screen,
+    s: &mut Screen,
     tree: &mut Tree,
     rank: &dyn Fn(&Proc) -> f64,
     cap: usize,
@@ -725,9 +892,15 @@ fn table(
         format!("{} processes", r.procs.len())
     };
     let mut out = vec![rule(cap, colour, "Processes", &sub, &right)];
+    if s.overlay == Overlay::Detail {
+        if let Some(row) = s.selected.and_then(|i| rows.get(i)) {
+            out.extend(detail_block(row, cap, colour, &s.users));
+        }
+        return out;
+    }
     // The name takes the rest; PID and USER go first when it would be too narrow.
     // The marker (2) and CPU 6, MEM 9, GPU 5, VRAM 9, DISK 11, each with its two spaces: 52.
-    let fixed = |pid: bool, user: bool| 52 + if pid { 9 } else { 0 } + if user { 8 } else { 0 };
+    let fixed = |pid: bool, user: bool| 52 + if pid { 9 } else { 0 } + if user { 10 } else { 0 };
     let (mut show_pid, mut show_user) = (!grouped, !grouped);
     while cap.saturating_sub(fixed(show_pid, show_user)) < 16 && (show_pid || show_user) {
         if show_user {
@@ -758,14 +931,66 @@ fn table(
     header.push(&cut("APP", name_w), Role::Dim);
     out.push(header);
     let room = s.rows.saturating_sub(out.len() + 1);
+    if let Some(i) = s.selected {
+        if room > 0 {
+            if i < s.scroll {
+                s.scroll = i;
+            } else if i >= s.scroll + room {
+                s.scroll = i + 1 - room;
+            }
+        }
+    }
     for (i, row) in rows.iter().enumerate().skip(s.scroll).take(room) {
         let mut l = Line::new(cap, colour);
         l.plain(if s.selected == Some(i) { "▸ " } else { "  " });
         let mark = marks.get(i).map_or("", String::as_str);
-        head.row(&mut l, row, mark, grouped);
+        head.row(&mut l, row, mark, grouped, &s.users);
         out.push(l);
     }
     out
+}
+
+/// The selected process in full: its ids, its numbers and its name.
+fn detail_block(row: &Row, cap: usize, colour: bool, users: &HashMap<u32, String>) -> Vec<Line> {
+    let mut ids = Line::body(cap, colour);
+    ids.push("pid ", Role::Dim);
+    ids.plain(&row.pid.map_or_else(|| "—".to_string(), |p| p.to_string()));
+    ids.sep();
+    ids.push("user ", Role::Dim);
+    ids.plain(&user_name(row.uid, users));
+    ids.sep();
+    ids.push("threads ", Role::Dim);
+    ids.plain(&row.threads.to_string());
+    ids.sep();
+    ids.push("processes ", Role::Dim);
+    ids.plain(&row.count.to_string());
+    let mut nums = Line::body(cap, colour);
+    nums.push("cpu ", Role::Dim);
+    nums.plain(&row.cpu.map_or_else(|| "—".to_string(), proc_pct));
+    nums.sep();
+    nums.push("mem ", Role::Dim);
+    size_item(&mut nums, row.mem, "", Role::Plain);
+    nums.sep();
+    nums.push("gpu ", Role::Dim);
+    nums.plain(
+        &row.gpu
+            .map_or_else(|| "—".to_string(), |x| format!("{x:.0}%")),
+    );
+    nums.sep();
+    nums.push("vram ", Role::Dim);
+    match row.vram {
+        Some(x) => size_item(&mut nums, x, "", Role::Plain),
+        None => nums.plain("—"),
+    }
+    let mut name = Line::body(cap, colour);
+    name.push("name ", Role::Dim);
+    name.plain(&row.name);
+    vec![ids, nums, name]
+}
+
+/// The user's name for a uid; a uid with no name is shown as the number.
+fn user_name(uid: u32, users: &HashMap<u32, String>) -> String {
+    users.get(&uid).cloned().unwrap_or_else(|| uid.to_string())
 }
 
 /// The table's columns after the marker: CPU, MEM, GPU, VRAM, DISK, then PID and USER when shown,
@@ -788,30 +1013,32 @@ impl Columns {
         }
     }
 
-    fn row(&self, l: &mut Line, r: &Row, mark: &str, grouped: bool) {
-        let cpu = r
-            .cpu
-            .map_or_else(|| "—".to_string(), |x| format!("{x:.1}%"));
-        let mem = text::bytes(r.mem);
-        let gpu = r
-            .gpu
-            .map_or_else(|| "—".to_string(), |x| format!("{x:.0}%"));
-        let vram = r.vram.map_or_else(|| "—".to_string(), text::bytes);
+    fn row(&self, l: &mut Line, r: &Row, mark: &str, grouped: bool, users: &HashMap<u32, String>) {
+        // A value that is exactly zero is drawn dim; a missing one is "—".
+        let cpu = r.cpu.map(|x| (proc_pct(x), x == 0.0));
+        let mem = Some((size_text(r.mem, ""), r.mem == 0));
+        let gpu = r.gpu.map(|x| (format!("{x:.0}%"), x == 0.0));
+        let vram = r.vram.map(|x| (size_text(x, ""), x == 0));
         let disk = match (r.read, r.write) {
-            (None, None) => "—".to_string(),
-            (a, b) => text::rate(Some(a.unwrap_or(0).saturating_add(b.unwrap_or(0)))),
+            (None, None) => None,
+            (a, b) => {
+                let total = a.unwrap_or(0).saturating_add(b.unwrap_or(0));
+                Some((size_text(total, "/s"), total == 0))
+            }
         };
-        let fields = [cpu, mem, gpu, vram, disk];
-        for (i, f) in fields.iter().enumerate() {
+        for (i, f) in [cpu, mem, gpu, vram, disk].into_iter().enumerate() {
             let w = [6, 9, 5, 9, 11][i];
-            pad_left(l, &cut(f, w), w);
+            match f {
+                Some((text, zero)) => cell(l, &text, if zero { Role::Dim } else { Role::Plain }, w),
+                None => cell(l, "—", Role::Plain, w),
+            }
         }
         if self.pid {
             let pid = r.pid.map_or_else(|| "—".to_string(), |p| p.to_string());
-            pad_left(l, &pid, 7);
+            cell(l, &pid, Role::Plain, 7);
         }
         if self.user {
-            pad_left(l, &r.uid.to_string(), 6);
+            cell(l, &user_name(r.uid, users), Role::Plain, 8);
         }
         let mut name = format!("{mark}{}", r.name);
         if grouped && r.count > 1 {
@@ -819,6 +1046,20 @@ impl Columns {
         }
         l.plain(&cut(&name, self.name_w));
     }
+}
+
+/// A size or rate as text, for a table cell: `2.3 GiB`, `0 B`, `3.2 MiB/s`.
+fn size_text(n: u64, suffix: &str) -> String {
+    let (num, unit) = size_parts(n);
+    format!("{num} {unit}{suffix}")
+}
+
+/// One table cell: the text cut to its width, right-aligned, then two spaces.
+fn cell(l: &mut Line, text: &str, role: Role, w: usize) {
+    let text = cut(text, w);
+    l.gap(w.saturating_sub(text.chars().count()));
+    l.push(&text, role);
+    l.gap(2);
 }
 
 /// The width of a column by its label.
@@ -830,15 +1071,9 @@ fn width_of(label: &str) -> usize {
         "VRAM" => 9,
         "DISK" => 11,
         "PID" => 7,
-        "USER" => 6,
+        "USER" => 8,
         _ => label.chars().count(),
     }
-}
-
-fn pad_left(l: &mut Line, text: &str, w: usize) {
-    l.gap(w.saturating_sub(text.chars().count()));
-    l.plain(text);
-    l.gap(2);
 }
 
 #[cfg(test)]
@@ -921,16 +1156,22 @@ mod tests {
             selected: Some(0),
             scroll: 0,
             interval_s: 1.0,
+            paused: false,
+            overlay: Overlay::Table,
+            keys: true,
+            prompt: None,
+            users: Rc::default(),
         }
     }
 
     fn frame(r: &Reading, v: &View, s: &Screen) -> String {
+        let mut s = s.clone();
         let mut hist = History::default();
         hist.push(r);
         let mut tree = Tree::new();
         let rank = |p: &Proc| f64::from(p.cpu_pct.unwrap_or(-1.0));
         let mut out = Vec::new();
-        render(&mut out, r, v, s, &hist, &mut tree, &rank);
+        render(&mut out, r, v, &mut s, &hist, &mut tree, &rank);
         String::from_utf8(out).unwrap()
     }
 
@@ -990,7 +1231,7 @@ mod tests {
         assert!(!text.contains("Sensors"));
         assert!(!text.contains("battery"));
         assert!(text.contains("Processes"));
-        assert_eq!(f.last().map(String::as_str), Some(KEY_LINE));
+        assert_eq!(f.last().map(String::as_str), Some(KEYS_LINE));
     }
 
     #[test]
@@ -999,7 +1240,7 @@ mod tests {
         let f = frame(&r, &view(), &screen(80, 24, false));
         let lines = lines_of(&f);
         assert_eq!(lines.len(), 24);
-        assert_eq!(lines[23], KEY_LINE);
+        assert!(lines[23].starts_with("↑↓ select"));
         assert!(f.starts_with("\x1b[?2026h\x1b[H"));
         assert!(f.ends_with("\x1b[J\x1b[?2026l"));
     }
@@ -1078,5 +1319,167 @@ mod tests {
                 .count()
                 <= 2
         );
+    }
+
+    /// The text of a frame, the history's cells and all, with colour as the screen has it.
+    fn render_text(r: &Reading, hist: &History, s: &mut Screen) -> String {
+        let mut tree = Tree::new();
+        let rank = |p: &Proc| f64::from(p.cpu_pct.unwrap_or(-1.0));
+        let mut out = Vec::new();
+        render(&mut out, r, &view(), s, hist, &mut tree, &rank);
+        String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn short_formats_keep_three_digits_and_no_trailing_zero() {
+        assert_eq!(sig3(9.8), "9.8");
+        assert_eq!(sig3(15.5), "15.5");
+        assert_eq!(sig3(212.4), "212");
+        assert_eq!(sig3(400.0), "400");
+        assert_eq!(sig3(1.04), "1");
+        assert_eq!(proc_pct(9.14), "9.1%");
+        assert_eq!(proc_pct(31.4), "31%");
+        assert_eq!(
+            uptime_short(3 * 86_400 + 4 * 3_600 + 12 * 60),
+            "up 3d 04:12"
+        );
+        assert_eq!(uptime_short(4 * 3_600 + 12 * 60), "up 04:12");
+        let g = 1024_u64 * 1024 * 1024;
+        let mut l = Line::new(80, false);
+        size_pair(&mut l, g * 98 / 10, g * 155 / 10, "");
+        assert_eq!(l.text, "9.8 of 15.5 GiB");
+        let mut l = Line::new(80, false);
+        size_pair(&mut l, 400 * 1024 * 1024, 16 * g, "");
+        assert_eq!(l.text, "400 MiB of 16 GiB");
+        let mut l = Line::new(80, false);
+        size_item(&mut l, 3_355_443, "/s", Role::Plain);
+        assert_eq!(l.text, "3.2 MiB/s");
+        let users: HashMap<u32, String> = [(1000, "dana".to_string())].into_iter().collect();
+        assert_eq!(user_name(1000, &users), "dana");
+        assert_eq!(user_name(977, &users), "977");
+    }
+
+    #[test]
+    fn a_zero_in_the_table_is_dim_and_a_missing_one_is_a_dash() {
+        let r = sample(4, vec![proc(1, "init", 0.0, 1 << 20)]);
+        let mut s = screen(120, 40, true);
+        let f = render_text(&r, &History::default(), &mut s);
+        assert!(f.contains("\x1b[2m0.0%\x1b[0m"));
+    }
+
+    #[test]
+    fn the_margin_holds_and_a_history_fills_a_fixed_field() {
+        let r = sample(12, vec![proc(1, "init", 3.0, 1 << 20)]);
+        let mut hist = History::default();
+        for _ in 0..5 {
+            hist.push(&r);
+        }
+        let mut s = screen(120, 40, false);
+        let raw = render_text(&r, &hist, &mut s);
+        // Every line after the first starts one column in, and none reaches the last column.
+        assert!(raw.contains("\r\n ── CPU"));
+        let lines = lines_of(&raw);
+        assert!(lines.iter().all(|l| l.chars().count() <= 118));
+        let h = lines.iter().find(|l| l.contains("last 5 s")).unwrap();
+        // The indent, then the field of 60 cells before the label.
+        let field = &h[..h.find("  last").unwrap()];
+        assert_eq!(field.chars().count(), 2 + 60);
+    }
+
+    #[test]
+    fn the_review_frames_are_written_when_a_folder_is_given() {
+        let Some(dir) = std::env::var_os("AETHER_FRAME_DIR") else {
+            return;
+        };
+        let dir = std::path::PathBuf::from(dir);
+        let apps = [
+            "browser", "editor", "terminal", "music", "mail", "sync", "shell", "game", "chat",
+            "files", "notes", "monitor",
+        ];
+        let mut procs = Vec::new();
+        for i in 0..25_u32 {
+            let name = apps[(i as usize * 7) % apps.len()];
+            let cpu = f32::from(u16::try_from(i * 37 % 90).unwrap()) / 3.0;
+            procs.push(proc(
+                100 + i,
+                name,
+                cpu,
+                u64::from(i + 1) * 90 * 1024 * 1024,
+            ));
+        }
+        let mut r = sample(12, procs);
+        r.mem.swap_total = 8 * 1024 * 1024 * 1024;
+        r.mem.swap_used = 200 * 1024 * 1024;
+        r.gpus.push(GpuSample {
+            name: "Example 580".to_string(),
+            vendor: "example",
+            pct: Some(41.0),
+            temp_c: Some(67.0),
+            power_w: Some(96.0),
+            vram_used: Some(2_254_857_830),
+            vram_total: Some(4_294_967_296),
+            fan_rpm: Some(1180),
+        });
+        for (chip, label, kind, value) in [
+            ("cpu", "package", SensorKind::Temp, 61.0),
+            ("gpu", "edge", SensorKind::Temp, 67.0),
+            ("nvme", "composite", SensorKind::Temp, 38.5),
+            ("board", "chassis", SensorKind::Fan, 820.0),
+            ("gpu", "fan", SensorKind::Fan, 1180.0),
+            ("psu", "power", SensorKind::Power, 42.0),
+        ] {
+            r.sensors.push(Sensor {
+                chip: chip.to_string(),
+                label: label.to_string(),
+                kind,
+                value,
+            });
+        }
+        r.disks.push(DiskSample {
+            mount: "/data".to_string(),
+            dev: "/dev/sdb1".to_string(),
+            total: 1_980_000_000_000,
+            used: 1_200_000_000_000,
+            read_bps: Some(0),
+            write_bps: Some(12 * 1024 * 1024),
+            busy_pct: Some(34.0),
+        });
+        r.nets.push(NetSample {
+            name: "wlan0".to_string(),
+            rx_bps: Some(0),
+            tx_bps: Some(0),
+            addrs: Vec::new(),
+        });
+        let mut hist = History::default();
+        for i in 0..60_u64 {
+            r.cpu.pct = Some((i * 13 % 100) as f32);
+            r.nets[0].rx_bps = Some(i * 50_000 % 4_000_000);
+            hist.push(&r);
+        }
+        let users: HashMap<u32, String> = [(1000, "dana".to_string()), (0, "root".to_string())]
+            .into_iter()
+            .collect();
+        let mut s = Screen {
+            cols: 120,
+            rows: 36,
+            colour: false,
+            selected: Some(2),
+            scroll: 0,
+            interval_s: 1.0,
+            paused: false,
+            overlay: Overlay::Table,
+            keys: true,
+            prompt: None,
+            users: Rc::new(users),
+        };
+        let text = render_text(&r, &hist, &mut s);
+        std::fs::write(
+            dir.join("aether-view-frame.txt"),
+            lines_of(&text).join("\n") + "\n",
+        )
+        .unwrap();
+        s.colour = true;
+        let ansi = render_text(&r, &hist, &mut s).replace("\x1b[H", "");
+        std::fs::write(dir.join("aether-view-frame.ansi"), ansi).unwrap();
     }
 }

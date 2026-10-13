@@ -123,6 +123,8 @@ pub struct Parsed {
     pub plain: bool,
     /// `--no-color`: the full-screen view without colour codes.
     pub no_color: bool,
+    /// `--no-keys`: the full-screen view takes no keys.
+    pub no_keys: bool,
     /// Seconds between live readings.
     pub interval_s: f64,
     /// Whether `-i` was given: `--once` then waits that long between its two readings.
@@ -174,6 +176,7 @@ Options:
   --json                 one JSON object per reading; a missing reading is null
   --plain                the plain text view, not the full screen on a terminal
   --no-color             the full screen without colour (NO_COLOR does the same)
+  --no-keys              the full screen takes no keys
   -s, --signal NAME|NUMBER  kill: the signal to send (TERM, SIGSTOP, 19; 1 to 64)
   --no-defaults          do not read the file of default arguments (aether/args)
 ";
@@ -206,6 +209,7 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
         json: false,
         plain: false,
         no_color: false,
+        no_keys: false,
         interval_s: 1.0,
         interval_given: false,
         force: false,
@@ -236,6 +240,7 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
             "--json" => p.json = true,
             "--plain" => p.plain = true,
             "--no-color" => p.no_color = true,
+            "--no-keys" => p.no_keys = true,
             "--flat" => p.view.flat = true,
             "--reverse" => p.view.reverse = true,
             "--steady" => p.view.steady = true,

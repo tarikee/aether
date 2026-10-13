@@ -164,3 +164,46 @@ pub fn addresses(out: &mut Vec<(String, String)>) {
     // SAFETY: `head` came from getifaddrs and is freed exactly once.
     unsafe { libc::freeifaddrs(head) };
 }
+
+/// The terminal settings of stdin as they were before the keys took it.
+#[derive(Clone, Copy)]
+pub struct Settings(libc::termios);
+
+/// Stdin in raw mode for the keys: no echo, no line editing, no signal keys. `None` when stdin
+/// is not a terminal.
+pub fn raw_input() -> Option<Settings> {
+    let mut now: libc::termios = unsafe { std::mem::zeroed() };
+    if unsafe { libc::tcgetattr(libc::STDIN_FILENO, &mut now) } != 0 {
+        return None;
+    }
+    let saved = Settings(now);
+    now.c_lflag &= !(libc::ICANON | libc::ECHO | libc::ISIG | libc::IEXTEN);
+    now.c_iflag &= !(libc::IXON | libc::ICRNL);
+    now.c_cc[libc::VMIN] = 0;
+    now.c_cc[libc::VTIME] = 0;
+    if unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &now) } != 0 {
+        return None;
+    }
+    Some(saved)
+}
+
+/// Puts the terminal back as `saved` has it.
+pub fn restore_input(saved: &Settings) {
+    let _ = unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &saved.0) };
+}
+
+/// Waits up to `ms` for input on stdin; false at the timeout, or when a signal ends the wait.
+pub fn input_ready(ms: i32) -> bool {
+    let mut fd = libc::pollfd {
+        fd: libc::STDIN_FILENO,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    unsafe { libc::poll(&mut fd, 1, ms) > 0 }
+}
+
+/// Reads what is waiting on stdin: `Some(0)` at its end, `None` on an error (a signal's too).
+pub fn read_input(buf: &mut [u8]) -> Option<usize> {
+    let n = unsafe { libc::read(libc::STDIN_FILENO, buf.as_mut_ptr().cast(), buf.len()) };
+    usize::try_from(n).ok()
+}

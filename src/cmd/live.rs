@@ -3,8 +3,9 @@
 //! take the screen.
 
 use crate::cli::{compare, Keys, Parsed, Sort, View};
+use crate::cmd::keys::{self, Action, Ident, Mode as Pane, Ui};
 use crate::out::history::History;
-use crate::out::screen::{self, Screen};
+use crate::out::screen::{self, Overlay, Screen};
 use crate::out::tree::Tree;
 use crate::out::{json, text};
 use aether::sys::{
@@ -14,6 +15,7 @@ use aether::Reading;
 use std::collections::HashMap;
 use std::io::{self, IsTerminal, Write};
 use std::process::ExitCode;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 /// Moves the cursor home and clears to the end of the screen: one frame replaces the last.
@@ -33,11 +35,15 @@ const SCREEN_MIN: (usize, usize) = (15, 60);
 
 /// How the frames are written: to a terminal or not, in the full-screen view or the plain one,
 /// and with colour codes or without.
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
 pub(crate) struct Mode {
     pub tty: bool,
     pub screen: bool,
     pub colour: bool,
+    /// The keys are on: stdin is a terminal in raw mode.
+    pub keys: bool,
+    /// The user names by uid.
+    pub users: Rc<HashMap<u32, String>>,
 }
 
 /// Runs the live view, or one reading with `--once`.
@@ -51,27 +57,117 @@ pub fn run(parsed: &Parsed) -> ExitCode {
         screen_size().is_some_and(|(rows, cols)| rows >= SCREEN_MIN.0 && cols >= SCREEN_MIN.1);
     let full =
         tty && live && !parsed.json && !parsed.plain && utf8_locale() && term_not_dumb() && fits;
+    if full {
+        catch_stops();
+    }
+    // The keys take stdin in raw mode; `Restore` puts it back however the run ends.
+    let saved = if full && !parsed.no_keys && io::stdin().is_terminal() {
+        raw_input()
+    } else {
+        None
+    };
+    let _restore = Restore { saved };
     let mode = Mode {
         tty,
         screen: full,
         colour: screen_colour(parsed),
+        keys: _restore.saved.is_some(),
+        users: Rc::new(user_names(&root)),
     };
-    if full {
-        catch_stops();
-    }
+    let keys_on = mode.keys;
     let mut out = io::stdout().lock();
     let result = frames(
         |r| sources.fill(r, started, &parsed.view),
         &mut out,
         parsed,
         mode,
-        wait,
+        move |d| {
+            if keys_on {
+                wait_keys(d)
+            } else {
+                wait(d);
+                Vec::new()
+            }
+        },
         screen_size,
         stop_requested,
     );
     // A full-screen write that fails means the terminal has gone: there is no one left to tell.
     let result = if full { result.or(Ok(())) } else { result };
     finish(result)
+}
+
+/// Puts stdin back as it was when dropped: the keys' raw mode ends however the run ends.
+struct Restore {
+    saved: Option<Saved>,
+}
+
+impl Drop for Restore {
+    fn drop(&mut self) {
+        if let Some(s) = &self.saved {
+            restore_input(s);
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+type Saved = aether::sys::linux::calls::Settings;
+#[cfg(not(target_os = "linux"))]
+type Saved = ();
+
+#[cfg(target_os = "linux")]
+fn raw_input() -> Option<Saved> {
+    aether::sys::linux::calls::raw_input()
+}
+#[cfg(not(target_os = "linux"))]
+fn raw_input() -> Option<Saved> {
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn restore_input(saved: &Saved) {
+    aether::sys::linux::calls::restore_input(saved);
+}
+#[cfg(not(target_os = "linux"))]
+fn restore_input(_saved: &Saved) {}
+
+/// Waits up to `d` for keys on stdin and returns the bytes that came; none at the timeout or
+/// when a signal ends the wait. Input that has closed reads as Ctrl-C, so the view leaves.
+#[cfg(target_os = "linux")]
+fn wait_keys(d: Duration) -> Vec<u8> {
+    let ms = i32::try_from(d.as_millis()).unwrap_or(i32::MAX);
+    if !aether::sys::linux::calls::input_ready(ms) {
+        return Vec::new();
+    }
+    let mut buf = [0u8; 64];
+    match aether::sys::linux::calls::read_input(&mut buf) {
+        Some(0) => vec![0x03],
+        Some(n) => buf[..n].to_vec(),
+        None => Vec::new(),
+    }
+}
+#[cfg(not(target_os = "linux"))]
+fn wait_keys(d: Duration) -> Vec<u8> {
+    wait(d);
+    Vec::new()
+}
+
+/// The user names by uid, read once from the password file. A missing file gives none, and a
+/// uid with no name is shown as the number.
+fn user_names(root: &Root) -> HashMap<u32, String> {
+    let mut names = HashMap::new();
+    if let Ok(text) = std::fs::read_to_string(root.path("etc/passwd")) {
+        for line in text.lines() {
+            let mut fields = line.split(':');
+            if let (Some(name), Some(_), Some(uid)) = (fields.next(), fields.next(), fields.next())
+            {
+                if let Ok(uid) = uid.parse::<u32>() {
+                    names.entry(uid).or_insert_with(|| name.to_string());
+                }
+            }
+        }
+    }
+    names
 }
 
 /// Colour codes unless `--no-color` or `NO_COLOR` is set.
@@ -323,47 +419,128 @@ impl Steady {
 
 /// Writes the readings: one when `--once`, else one a tick until the output fails or a stop
 /// comes. The full-screen view is entered before the first frame and left after the last, however
-/// the run ends. `read` fills a reading, `pause` waits, `size` gives the terminal's (rows, columns)
-/// and `stop` says a stop has come. Every run reads once before its first frame, so the rates have
-/// two readings to work from.
+/// the run ends. `read` fills a reading, `wait` waits for a while and returns the keys that came
+/// in that time, `size` gives the terminal's (rows, columns) and `stop` says a stop has come.
+/// Every run reads twice before its first frame, so the rates have two readings to work from.
 fn frames(
     mut read: impl FnMut(&mut Reading),
     out: &mut dyn Write,
     parsed: &Parsed,
     mode: Mode,
-    mut pause: impl FnMut(Duration),
+    mut wait: impl FnMut(Duration) -> Vec<u8>,
     mut size: impl FnMut() -> Option<(usize, usize)>,
     stop: impl Fn() -> bool,
 ) -> io::Result<()> {
     if !mode.screen {
-        return draw(&mut read, out, parsed, mode, &mut pause, &mut size, &stop);
+        return draw(&mut read, out, parsed, mode, &mut wait, &mut size, &stop);
     }
     enter(out)?;
-    let result = draw(&mut read, out, parsed, mode, &mut pause, &mut size, &stop);
+    let result = draw(&mut read, out, parsed, mode, &mut wait, &mut size, &stop);
     // Whatever ended the run, the terminal is put back; a failed write here means it is gone.
     let _ = leave(out);
     result
 }
 
+/// What the last line asks, while a key is waiting for an answer.
+fn prompt(ui: &Ui) -> Option<String> {
+    match ui.mode {
+        Pane::Filter => Some(format!("/ {}", ui.draft)),
+        Pane::Confirm { force } => ui.ident.as_ref().map(|id| {
+            let what = if force { "force end" } else { "end" };
+            match id.pid {
+                Some(p) => format!("{what} {} (pid {p})? y or n", id.name),
+                None => format!("{what} all {}? y or n", id.name),
+            }
+        }),
+        _ => None,
+    }
+}
+
+/// Ends the processes a row stands for: the one process, or, for a group or in the grouped
+/// view, every process of the name.
+fn end_rows(reading: &Reading, grouped: bool, pid: Option<u32>, name: &str, force: bool) {
+    match pid {
+        Some(p) if !grouped => {
+            let _ = aether::sys::end(p, force);
+        }
+        _ => {
+            for p in reading.procs.iter().filter(|p| p.name == name) {
+                let _ = aether::sys::end(p.pid, force);
+            }
+        }
+    }
+}
+
+/// Puts the processes a reading shows into `reading.procs`: all of them, or those the filter
+/// keeps. While a filter is on, the whole list is kept in `full`, so a key that changes the
+/// filter needs no new reading. `fresh` says `reading.procs` holds a new reading's list.
+#[allow(clippy::too_many_arguments)]
+fn sift(
+    reading: &mut Reading,
+    full: &mut Vec<Proc>,
+    filtered: &mut bool,
+    needle: Option<&str>,
+    fresh: bool,
+    commands: &mut Commands,
+    tick: u64,
+    root: &Root,
+) {
+    if fresh && *filtered {
+        std::mem::swap(&mut reading.procs, full);
+    }
+    match needle {
+        Some(n) => {
+            if !*filtered {
+                std::mem::swap(&mut reading.procs, full);
+                *filtered = true;
+            }
+            reading.procs.clear();
+            for p in full.iter() {
+                if keeps(p, n, commands, tick, root) {
+                    reading.procs.push(p.clone());
+                }
+            }
+        }
+        None => {
+            if *filtered {
+                std::mem::swap(&mut reading.procs, full);
+                *filtered = false;
+            }
+        }
+    }
+}
+
+/// The loop: a reading when one is due, a frame after each reading and each key, and a wait
+/// between them in which keys are taken. A key redraws from the last reading and reads nothing.
 fn draw(
     read: &mut dyn FnMut(&mut Reading),
     out: &mut dyn Write,
     parsed: &Parsed,
     mode: Mode,
-    pause: &mut dyn FnMut(Duration),
+    wait: &mut dyn FnMut(Duration) -> Vec<u8>,
     size: &mut dyn FnMut() -> Option<(usize, usize)>,
     stop: &dyn Fn() -> bool,
 ) -> io::Result<()> {
     let live = !parsed.once;
     let interval = Duration::try_from_secs_f64(parsed.interval_s).unwrap_or(Duration::MAX);
-    let mut reading = Reading::default();
-    let mut buf: Vec<u8> = Vec::with_capacity(64 * 1024);
+    // `--once` waits as long as `-i` asked, or 250 ms when `-i` was not given.
+    let once_wait = if parsed.interval_given {
+        interval
+    } else {
+        ONCE_WAIT
+    };
     let root = Root::system();
+    let mut reading = Reading::default();
+    let mut full: Vec<Proc> = Vec::new();
+    let mut filtered = false;
+    let mut held: Vec<Proc> = Vec::new();
+    let mut buf: Vec<u8> = Vec::with_capacity(64 * 1024);
     let mut commands = Commands::new();
     let mut steady = Steady::default();
     let mut tick = 0u64;
     let mut tree = Tree::new();
     let mut hist = History::default();
+    let mut ui = Ui::new(parsed.view.clone(), parsed.interval_s);
     let (rows, cols) = size().unwrap_or((24, 80));
     let mut state = Screen {
         cols,
@@ -372,58 +549,89 @@ fn draw(
         selected: Some(0),
         scroll: 0,
         interval_s: parsed.interval_s,
+        paused: false,
+        overlay: Overlay::Table,
+        keys: mode.keys,
+        prompt: None,
+        users: Rc::clone(&mode.users),
     };
-    // A first reading, then a wait, so the rates have two readings to work from.
-    read(&mut reading);
-    // `--once` waits as long as `-i` asked, or 250 ms when `-i` was not given.
-    let once_wait = if parsed.interval_given {
-        interval
-    } else {
-        ONCE_WAIT
-    };
-    pause(if live { interval } else { once_wait });
+    let mut at = Instant::now();
+    let mut readings = 0u32;
+    let mut last_rows = 0usize;
     loop {
         if stop() {
             return Ok(());
         }
-        let started = Instant::now();
-        read(&mut reading);
-        if let Some(needle) = parsed.view.filter.as_deref() {
-            tick += 1;
-            reading
-                .procs
-                .retain(|p| keeps(p, needle, &mut commands, tick, &root));
-            commands.retain(|_, e| e.0 == tick);
-        }
-        let smooth = parsed.view.steady && parsed.view.by.smooths();
-        if smooth {
-            steady.update(&reading.procs, parsed.view.by);
-        }
-        let by = parsed.view.by;
-        let rank = |p: &Proc| if smooth { steady.of(p) } else { key(p, by) };
-        order(&mut reading.procs, &parsed.view, &rank);
-        buf.clear();
-        if mode.screen {
-            if let Some((rows, cols)) = size() {
-                state.rows = rows;
-                state.cols = cols;
+        if Instant::now() >= at {
+            let started = Instant::now();
+            read(&mut reading);
+            if ui.paused {
+                reading.procs.clone_from(&held);
+            } else {
+                tick += 1;
+                if ui.view.steady && ui.view.by.smooths() {
+                    steady.update(&reading.procs, ui.view.by);
+                }
+                let needle = ui.view.filter.clone();
+                sift(
+                    &mut reading,
+                    &mut full,
+                    &mut filtered,
+                    needle.as_deref(),
+                    true,
+                    &mut commands,
+                    tick,
+                    &root,
+                );
+                commands.retain(|_, e| e.0 == tick);
             }
             hist.push(&reading);
+            readings += 1;
+            at = started + if live { interval } else { once_wait };
+        }
+        if readings < 2 {
+            // A wait that came back with no keys has reached its time (or a signal ended it).
+            if wait(at.saturating_duration_since(Instant::now())).is_empty() {
+                at = Instant::now();
+            }
+            continue;
+        }
+        let smooth = ui.view.steady && ui.view.by.smooths();
+        let by = ui.view.by;
+        let rank = |p: &Proc| if smooth { steady.of(p) } else { key(p, by) };
+        order(&mut reading.procs, &ui.view, &rank);
+        buf.clear();
+        if mode.screen {
+            if let Some((r, c)) = size() {
+                state.rows = r;
+                state.cols = c;
+            }
+            let listed = text::process_rows(&reading.procs, &ui.view, &rank, &mut tree).0;
+            last_rows = listed.len();
+            let pos = ui.ident.as_ref().and_then(|id| {
+                listed
+                    .iter()
+                    .position(|r| r.name == id.name && r.pid == id.pid)
+            });
+            ui.index = pos.unwrap_or(ui.index.min(listed.len().saturating_sub(1)));
+            ui.ident = listed.get(ui.index).map(|r| Ident {
+                name: r.name.clone(),
+                pid: r.pid,
+            });
+            state.selected = (!listed.is_empty()).then_some(ui.index);
+            state.paused = ui.paused;
+            state.overlay = ui.overlay();
+            state.interval_s = ui.interval_s;
+            state.prompt = prompt(&ui);
             screen::render(
-                &mut buf,
-                &reading,
-                &parsed.view,
-                &state,
-                &hist,
-                &mut tree,
-                &rank,
+                &mut buf, &reading, &ui.view, &mut state, &hist, &mut tree, &rank,
             );
         } else {
             if live && mode.tty && !parsed.json {
                 buf.extend_from_slice(CLEAR);
             }
             if parsed.json {
-                json::write(&reading, &parsed.view, &mut buf);
+                json::write(&reading, &ui.view, &mut buf);
             } else {
                 // A terminal is filled to its height, unless --all asks for every row.
                 let fit = if mode.tty && !parsed.view.all {
@@ -431,7 +639,7 @@ fn draw(
                 } else {
                     None
                 };
-                text::write(&reading, &parsed.view, &mut buf, fit, &mut tree, &rank);
+                text::write(&reading, &ui.view, &mut buf, fit, &mut tree, &rank);
             }
         }
         out.write_all(&buf)?;
@@ -439,7 +647,44 @@ fn draw(
         if !live {
             return Ok(());
         }
-        pause(interval.saturating_sub(started.elapsed()));
+        let bytes = wait(at.saturating_duration_since(Instant::now()));
+        if bytes.is_empty() {
+            at = Instant::now();
+        }
+        let mut pos = 0;
+        while let Some((key, used)) = keys::next(&bytes[pos..]) {
+            pos += used;
+            let Some(k) = key else { continue };
+            let (index, was_paused, filter) = (ui.index, ui.paused, ui.view.filter.clone());
+            let action = ui.apply(k, last_rows);
+            if ui.index != index {
+                ui.ident = None;
+            }
+            if ui.paused && !was_paused {
+                held.clone_from(&reading.procs);
+            }
+            if ui.view.filter != filter {
+                let needle = ui.view.filter.clone();
+                sift(
+                    &mut reading,
+                    &mut full,
+                    &mut filtered,
+                    needle.as_deref(),
+                    false,
+                    &mut commands,
+                    tick,
+                    &root,
+                );
+            }
+            match action {
+                Action::None => {}
+                Action::Quit => return Ok(()),
+                Action::End { pid, name, force } => {
+                    let grouped = !ui.view.flat && !ui.view.tree;
+                    end_rows(&reading, grouped, pid, &name, force);
+                }
+            }
+        }
     }
 }
 
@@ -448,12 +693,15 @@ fn draw(
 mod tests {
     use super::*;
     use crate::cli::parse;
+    use std::rc::Rc;
 
     fn mode(tty: bool) -> Mode {
         Mode {
             tty,
             screen: false,
             colour: false,
+            keys: false,
+            users: Rc::default(),
         }
     }
 
@@ -595,14 +843,18 @@ mod tests {
             &mut out,
             &p,
             mode(true),
-            |d| pauses.push(d),
+            |d| {
+                pauses.push(d);
+                Vec::new()
+            },
             || None,
             || false,
         );
         assert!(r.is_ok());
         // A first reading, the wait, then the reading that is printed.
         assert_eq!(reads, 2);
-        assert_eq!(pauses, vec![ONCE_WAIT]);
+        assert_eq!(pauses.len(), 1);
+        assert!(pauses[0] <= ONCE_WAIT);
         assert_eq!(count(&out.out, CLEAR), 0);
     }
 
@@ -617,7 +869,10 @@ mod tests {
             &mut out,
             &p,
             mode(true),
-            |d| pauses.push(d),
+            |d| {
+                pauses.push(d);
+                Vec::new()
+            },
             || None,
             || false,
         );
@@ -634,7 +889,15 @@ mod tests {
     fn live_into_a_pipe_has_no_clear_codes() {
         let p = parse(&args("")).unwrap();
         let mut out = Limited::new(2, io::ErrorKind::Other);
-        let _ = frames(|_| {}, &mut out, &p, mode(false), |_| {}, || None, || false);
+        let _ = frames(
+            |_| {},
+            &mut out,
+            &p,
+            mode(false),
+            |_| Vec::new(),
+            || None,
+            || false,
+        );
         assert_eq!(count(&out.out, CLEAR), 0);
         assert_eq!(out.flushes, 3);
     }
@@ -643,7 +906,15 @@ mod tests {
     fn json_is_never_cleared() {
         let p = parse(&args("--json")).unwrap();
         let mut out = Limited::new(1, io::ErrorKind::Other);
-        let _ = frames(|_| {}, &mut out, &p, mode(true), |_| {}, || None, || false);
+        let _ = frames(
+            |_| {},
+            &mut out,
+            &p,
+            mode(true),
+            |_| Vec::new(),
+            || None,
+            || false,
+        );
         assert_eq!(count(&out.out, CLEAR), 0);
     }
 
@@ -657,7 +928,7 @@ mod tests {
             &mut out,
             &p,
             mode(false),
-            |_| {},
+            |_| Vec::new(),
             || None,
             || false,
         );
