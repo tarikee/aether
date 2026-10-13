@@ -75,6 +75,13 @@ struct Slot {
     active: bool,
     /// Looks at this process since its CPU time last moved.
     looks: u32,
+    /// A kernel thread (parent 2, or pid 2): its statm and io are never opened.
+    kernel: bool,
+    /// The shared pages from the last statm read.
+    shared: Option<u64>,
+    /// Looks since the last statm and io reads.
+    statm_age: u32,
+    io_age: u32,
     /// Reads of stat, statm and io so far (tests only).
     #[cfg(test)]
     reads: [u32; 3],
@@ -173,6 +180,10 @@ impl Procs {
             io_prev: None,
             active: true,
             looks: 0,
+            kernel: false,
+            shared: None,
+            statm_age: 0,
+            io_age: 0,
             #[cfg(test)]
             reads: [0; 3],
         };
@@ -206,9 +217,11 @@ impl Procs {
     }
 
     /// Reads one process's files into its sample. A process that was active at its last look is
-    /// read in full on every tick. An idle one is looked at only on the ticks where
-    /// `(tick + pid) % 3 == 0`; its statm and io are read when its CPU time has moved, and
-    /// otherwise on every fifth look.
+    /// read in full on every tick. An idle one is looked at on the ticks where
+    /// `(tick + pid) % 3 == 0`. Resident memory and CPU come from `stat` on each look; statm (the
+    /// shared pages) on every third look of a busy process and every fifth of an idle one; io on
+    /// every second look of a busy process and every fifth of an idle one. A kernel thread gets
+    /// `stat` only.
     fn refresh(&mut self, i: usize, now: f64) -> Refresh {
         let (cpus, budget, page, tick) = (self.cpus, self.budget, self.page, self.tick);
         let kept = &mut self.kept;
@@ -241,6 +254,7 @@ impl Procs {
         proc.state = st.state;
         proc.threads = st.threads;
         proc.started_s = st.start / calls::ticks_per_second();
+        slot.kernel = st.ppid == 2 || slot.pid == 2;
         let changed = slot.cpu_prev.is_none_or(|(t0, _)| st.ticks != t0);
         proc.cpu_pct = slot
             .cpu_prev
@@ -252,43 +266,55 @@ impl Procs {
         } else {
             slot.looks.wrapping_add(1)
         };
-        if !(was_active || changed || slot.looks.is_multiple_of(5)) {
-            return Refresh::Ok;
-        }
-
-        let raw = fetch(&mut slot.statm, kept, budget, &slot.statm_path, buf);
-        #[cfg(test)]
-        {
-            slot.reads[1] += 1;
-        }
-        let Some((resident, shared)) = parse_statm(raw) else {
-            return Refresh::Gone;
-        };
-        proc.rss = resident.saturating_mul(page);
-        proc.mem = resident.saturating_sub(shared).saturating_mul(page);
-
-        let raw = fetch(&mut slot.io, kept, budget, &slot.io_path, buf);
-        #[cfg(test)]
-        {
-            slot.reads[2] += 1;
-        }
-        match parse_io(raw) {
-            Some((read, written)) => {
-                let (rb, wb) = match slot.io_prev {
-                    Some((r0, w0, t0)) if now > t0 => (
-                        Some(per_second(read.saturating_sub(r0), now - t0)),
-                        Some(per_second(written.saturating_sub(w0), now - t0)),
-                    ),
-                    _ => (None, None),
-                };
-                proc.read_bps = rb;
-                proc.write_bps = wb;
-                slot.io_prev = Some((read, written, now));
+        let busy = changed || was_active;
+        // Resident pages come from stat on every look; the shared part is kept from statm.
+        let rss = st.rss;
+        proc.rss = rss.saturating_mul(page);
+        slot.statm_age = slot.statm_age.saturating_add(1);
+        slot.io_age = slot.io_age.saturating_add(1);
+        if !slot.kernel && (slot.shared.is_none() || slot.statm_age >= if busy { 3 } else { 5 }) {
+            let raw = fetch(&mut slot.statm, kept, budget, &slot.statm_path, buf);
+            #[cfg(test)]
+            {
+                slot.reads[1] += 1;
             }
-            None => {
-                proc.read_bps = None;
-                proc.write_bps = None;
-                slot.io_prev = None;
+            let Some((_, shared)) = parse_statm(raw) else {
+                return Refresh::Gone;
+            };
+            slot.shared = Some(shared);
+            slot.statm_age = 0;
+        }
+        proc.mem = rss
+            .saturating_sub(slot.shared.unwrap_or(0))
+            .saturating_mul(page);
+
+        // A rate is kept from the last two looks; the second reading of a process has none yet.
+        let io_due = slot.io_prev.is_none() || proc.read_bps.is_none();
+        if !slot.kernel && (io_due || slot.io_age >= if busy { 2 } else { 5 }) {
+            let raw = fetch(&mut slot.io, kept, budget, &slot.io_path, buf);
+            #[cfg(test)]
+            {
+                slot.reads[2] += 1;
+            }
+            slot.io_age = 0;
+            match parse_io(raw) {
+                Some((read, written)) => {
+                    let (rb, wb) = match slot.io_prev {
+                        Some((r0, w0, t0)) if now > t0 => (
+                            Some(per_second(read.saturating_sub(r0), now - t0)),
+                            Some(per_second(written.saturating_sub(w0), now - t0)),
+                        ),
+                        _ => (None, None),
+                    };
+                    proc.read_bps = rb;
+                    proc.write_bps = wb;
+                    slot.io_prev = Some((read, written, now));
+                }
+                None => {
+                    proc.read_bps = None;
+                    proc.write_bps = None;
+                    slot.io_prev = None;
+                }
             }
         }
         Refresh::Ok
@@ -398,6 +424,8 @@ struct Stat<'a> {
     threads: u32,
     ticks: u64,
     start: u64,
+    /// Resident pages (field 24).
+    rss: u64,
 }
 
 fn parse_stat(buf: &[u8]) -> Option<Stat<'_>> {
@@ -409,7 +437,7 @@ fn parse_stat(buf: &[u8]) -> Option<Stat<'_>> {
     let name = &buf[open + 1..close];
     let rest = buf.get(close + 1..)?;
     // Token 0 is field 3 (state); field n is token n - 3.
-    let mut tok: [&[u8]; 20] = [&[]; 20];
+    let mut tok: [&[u8]; 24] = [&[]; 24];
     for (slot, t) in tok.iter_mut().zip(fields(rest)) {
         *slot = t;
     }
@@ -420,6 +448,7 @@ fn parse_stat(buf: &[u8]) -> Option<Stat<'_>> {
         threads: u32::try_from(num(tok[17])?).ok()?,
         ticks: num(tok[11])?.checked_add(num(tok[12])?)?,
         start: num(tok[19])?,
+        rss: num(tok[21])?,
     })
 }
 
@@ -634,9 +663,10 @@ mod tests {
     #[test]
     fn parses_a_stat_line_whose_name_has_brackets() {
         let st = parse_stat(
-            b"1002 (web (main)) S 1000 1002 1002 0 -1 4194560 100 0 0 0 50 0 0 0 20 0 30 0 1200 10000000",
+            b"1002 (web (main)) S 1000 1002 1002 0 -1 4194560 100 0 0 0 50 0 0 0 20 0 30 0 1200 10000000 4000",
         )
         .expect("parses");
+        assert_eq!(st.rss, 4000);
         assert_eq!(st.name, &b"web (main)"[..]);
         assert_eq!(st.state, b'S');
         assert_eq!(st.ppid, 1000);
@@ -716,10 +746,15 @@ mod tests {
     /// Writes one process's three files as they stand at a tick: `ticks` of CPU, `resident`
     /// pages, and `read` bytes read from disk.
     fn write_pid(root: &Path, pid: u32, ticks: u64, resident: u64, read: u64) {
+        write_pid_under(root, pid, 1000, ticks, resident, read);
+    }
+
+    /// As `write_pid`, with the parent given (2 makes a kernel thread). Its shared pages are 100.
+    fn write_pid_under(root: &Path, pid: u32, ppid: u32, ticks: u64, resident: u64, read: u64) {
         let dir = root.join("proc").join(pid.to_string());
         fs::create_dir_all(&dir).expect("pid directory");
         let stat = format!(
-            "{pid} (sleep) S 1000 {pid} {pid} 0 -1 4194560 100 0 0 0 {ticks} 0 0 0 20 0 1 0 1200 10000000\n"
+            "{pid} (sleep) S {ppid} {pid} {pid} 0 -1 4194560 100 0 0 0 {ticks} 0 0 0 20 0 1 0 1200 10000000 {resident}\n"
         );
         fs::write(dir.join("stat"), stat).expect("stat");
         fs::write(dir.join("statm"), format!("1000 {resident} 100 0 0 0 0\n")).expect("statm");
@@ -744,9 +779,10 @@ mod tests {
         write_pid(&work, PID, 500, 100, 0);
         procs.read_at(1.0);
         procs.read_at(2.0);
-        // The first reading reads all three files, the second finds the CPU time unchanged.
-        assert_eq!(procs.reads_of(PID), [2, 2, 2]);
-        let mut looks = 1u32;
+        // The first reading reads all three files; the second reads stat and io (the first rate).
+        assert_eq!(procs.reads_of(PID), [2, 1, 2]);
+        // statm and io are read on every fifth look: the first, the sixth, the eleventh...
+        let mut looks = 2u32;
         for tick in 3..=14u64 {
             write_pid(&work, PID, 500, 100 + tick, 0);
             let before = procs.reads_of(PID);
@@ -755,8 +791,8 @@ mod tests {
             let delta = [0, 1, 2].map(|k| after[k] - before[k]);
             if (tick + p).is_multiple_of(3) {
                 looks += 1;
-                let due = if looks.is_multiple_of(5) { 1 } else { 0 };
-                assert_eq!(delta, [1, due, due], "tick {tick} is its tick");
+                let due = [1, u32::from(looks % 5 == 1), u32::from(looks % 5 == 2)];
+                assert_eq!(delta, due, "tick {tick} is its tick");
             } else {
                 assert_eq!(delta, [0, 0, 0], "tick {tick} is off its tick");
             }
@@ -773,8 +809,9 @@ mod tests {
         write_pid(&work, PID, 500, 100, 0);
         procs.read_at(1.0);
         procs.read_at(2.0);
-        let mut first_look = None;
-        for tick in 3..=10u64 {
+        // Looks since the first one that finds it moved: statm on every third, io on every second.
+        let mut first_look: Option<u64> = None;
+        for tick in 3..=12u64 {
             // The CPU time moves on every tick from here on.
             write_pid(&work, PID, 500 + 100 * tick, 100, 0);
             let before = procs.reads_of(PID);
@@ -783,10 +820,15 @@ mod tests {
             let delta = [0, 1, 2].map(|k| after[k] - before[k]);
             match first_look {
                 None if (tick + p).is_multiple_of(3) => {
-                    first_look = Some(tick);
-                    assert_eq!(delta, [1, 1, 1], "the look that finds it moved");
+                    first_look = Some(0);
+                    assert_eq!(delta, [1, 0, 0], "the look that finds it moved");
                 }
-                Some(_) => assert_eq!(delta, [1, 1, 1], "active on tick {tick}"),
+                Some(n) => {
+                    let n = n + 1;
+                    first_look = Some(n);
+                    let want = [1, u32::from(n % 3 == 1), u32::from(n % 2 == 1)];
+                    assert_eq!(delta, want, "active on tick {tick}, look {n}");
+                }
                 None => assert_eq!(delta, [0, 0, 0], "tick {tick} is off its tick"),
             }
         }
@@ -816,6 +858,55 @@ mod tests {
                 assert_eq!(find(&list, PID).cpu_pct, Some(25.0));
             }
         }
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn a_kernel_thread_gets_stat_only() {
+        const PID: u32 = 2000;
+        let work = scratch("kernel");
+        let mut procs = Procs::open(&Root::at(&work));
+        for tick in 1..=6u64 {
+            write_pid_under(&work, PID, 2, 500 + 10 * tick, 0, 0);
+            procs.read_at(tick as f64);
+        }
+        assert_eq!(
+            procs.reads_of(PID),
+            [6, 0, 0],
+            "stat on every reading, nothing else"
+        );
+        let p = find(procs.read_at(7.0), PID).clone();
+        assert_eq!((p.mem, p.rss), (0, 0));
+        assert_eq!((p.read_bps, p.write_bps), (None, None));
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn resident_memory_follows_stat_when_statm_is_not_read() {
+        const PID: u32 = 2000;
+        let work = scratch("rss");
+        let mut procs = Procs::open(&Root::at(&work));
+        // statm says 300 resident and 100 shared pages, read on the first look only.
+        write_pid(&work, PID, 500, 300, 0);
+        procs.read_at(1.0);
+        let page = calls::page_size();
+        write_pid(&work, PID, 600, 300, 0);
+        procs.read_at(2.0);
+        // Stat now says 500 resident; the look is the third since statm was read, not the third.
+        write_pid(&work, PID, 700, 500, 0);
+        let before = procs.reads_of(PID)[1];
+        let p = find(procs.read_at(3.0), PID).clone();
+        assert_eq!(
+            procs.reads_of(PID)[1],
+            before,
+            "statm not read on this look"
+        );
+        assert_eq!(p.rss, 500 * page, "resident from stat");
+        assert_eq!(
+            p.mem,
+            400 * page,
+            "resident from stat less the shared pages kept"
+        );
         let _ = fs::remove_dir_all(&work);
     }
 
