@@ -31,6 +31,21 @@ pub fn signal(pid: u32, sig: i32) -> Result<(), i32> {
     }
 }
 
+/// Sends a signal for `aether kill`: the signal is 1 to 64, and pid 0, pid 1 and this
+/// program's own pid are refused whatever is asked.
+pub fn send_signal(pid: u32, sig: i32) -> Result<(), crate::sys::EndError> {
+    use crate::sys::EndError;
+    if pid <= 1 || pid == std::process::id() || !(1..=64).contains(&sig) {
+        return Err(EndError::Refused);
+    }
+    match signal(pid, sig) {
+        Ok(()) => Ok(()),
+        Err(libc::ESRCH) => Err(EndError::NotFound),
+        Err(libc::EPERM) => Err(EndError::NotAllowed),
+        Err(_) => Err(EndError::Refused),
+    }
+}
+
 /// The page size in bytes (4096 if the system does not say).
 pub fn page_size() -> u64 {
     sysconf(libc::_SC_PAGESIZE, 4096)
@@ -85,4 +100,45 @@ pub fn term_rows() -> Option<u16> {
     // SAFETY: `TIOCGWINSZ` writes one winsize struct, which we pass.
     let ok = unsafe { libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut ws) } == 0;
     (ok && ws.ws_row > 0).then_some(ws.ws_row)
+}
+
+/// Every interface's addresses as (interface, address). Link-local IPv6 is left out.
+pub fn addresses(out: &mut Vec<(String, String)>) {
+    out.clear();
+    let mut head: *mut libc::ifaddrs = std::ptr::null_mut();
+    // SAFETY: getifaddrs fills `head` with a list that stays valid until freeifaddrs.
+    if unsafe { libc::getifaddrs(&mut head) } != 0 {
+        return;
+    }
+    let mut cur = head;
+    while !cur.is_null() {
+        // SAFETY: `cur` is a node of the list returned above, which is not freed yet.
+        let ifa = unsafe { &*cur };
+        cur = ifa.ifa_next;
+        if ifa.ifa_addr.is_null() || ifa.ifa_name.is_null() {
+            continue;
+        }
+        // SAFETY: a non-null ifa_addr points at a sockaddr; its family says which kind.
+        let family = i32::from(unsafe { (*ifa.ifa_addr).sa_family });
+        let text = if family == libc::AF_INET {
+            // SAFETY: family AF_INET means the storage holds a sockaddr_in.
+            let a = unsafe { std::ptr::read_unaligned(ifa.ifa_addr.cast::<libc::sockaddr_in>()) };
+            std::net::Ipv4Addr::from(u32::from_be(a.sin_addr.s_addr)).to_string()
+        } else if family == libc::AF_INET6 {
+            // SAFETY: family AF_INET6 means the storage holds a sockaddr_in6.
+            let a = unsafe { std::ptr::read_unaligned(ifa.ifa_addr.cast::<libc::sockaddr_in6>()) };
+            let ip = std::net::Ipv6Addr::from(a.sin6_addr.s6_addr);
+            if ip.segments()[0] & 0xffc0 == 0xfe80 {
+                continue;
+            }
+            ip.to_string()
+        } else {
+            continue;
+        };
+        // SAFETY: ifa_name is a NUL-terminated string owned by the list.
+        let name = unsafe { std::ffi::CStr::from_ptr(ifa.ifa_name) };
+        out.push((name.to_string_lossy().into_owned(), text));
+    }
+    // SAFETY: `head` came from getifaddrs and is freed exactly once.
+    unsafe { libc::freeifaddrs(head) };
 }

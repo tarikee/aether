@@ -68,6 +68,10 @@ pub struct CpuSample {
     pub mhz: Option<u32>,
     pub temp_c: Option<f32>,
     pub load: Option<[f32; 3]>,
+    /// The clock of each thread in MHz, in thread order (empty when not readable).
+    pub threads_mhz: Vec<u32>,
+    /// Package power in watts from the energy counter (`None` when not readable).
+    pub power_w: Option<f32>,
 }
 
 /// Memory and swap, in bytes.
@@ -121,6 +125,8 @@ pub struct DiskSample {
     pub used: u64,
     pub read_bps: Option<u64>,
     pub write_bps: Option<u64>,
+    /// Share of the time the whole device was busy since the last reading, at most 100.
+    pub busy_pct: Option<f32>,
 }
 
 /// One network interface.
@@ -129,6 +135,8 @@ pub struct NetSample {
     pub name: String,
     pub rx_bps: Option<u64>,
     pub tx_bps: Option<u64>,
+    /// The IPv4 and IPv6 addresses (not link-local); empty when not read.
+    pub addrs: Vec<String>,
 }
 
 /// The battery of a laptop.

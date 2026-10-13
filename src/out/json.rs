@@ -32,11 +32,19 @@ pub fn write(reading: &Reading, view: &View, out: &mut Vec<u8>) {
     }
     if view.shows("disk") {
         o.key("disks");
-        array(o.out, &reading.disks, disk);
+        array_of(
+            o.out,
+            reading.disks.iter().filter(|d| view.shows_disk(&d.mount)),
+            disk,
+        );
     }
     if view.shows("net") {
         o.key("nets");
-        array(o.out, &reading.nets, net);
+        array_of(
+            o.out,
+            reading.nets.iter().filter(|n| view.shows_net(&n.name)),
+            net,
+        );
     }
     if view.shows("battery") {
         o.key("battery");
@@ -171,14 +179,41 @@ fn cpu(out: &mut Vec<u8>, c: &CpuSample) {
     o.f32("pct", c.pct);
     o.key("threads");
     array_f32(o.out, &c.threads);
+    o.key("threads_mhz");
+    array_of(o.out, c.threads_mhz.iter(), mhz_each);
     o.int("mhz", c.mhz.map(u64::from));
     o.f32("temp_c", c.temp_c);
+    o.f32("power_w", c.power_w);
     o.key("load");
     match c.load {
         Some(l) => array_f32(o.out, &l),
         None => put(o.out, "null"),
     }
     o.close();
+}
+
+/// Writes a JSON array from any run of items, one `each` call per item.
+fn array_of<'a, T: 'a>(
+    out: &mut Vec<u8>,
+    items: impl Iterator<Item = &'a T>,
+    each: fn(&mut Vec<u8>, &T),
+) {
+    out.push(b'[');
+    for (i, item) in items.enumerate() {
+        if i > 0 {
+            out.push(b',');
+        }
+        each(out, item);
+    }
+    out.push(b']');
+}
+
+fn mhz_each(out: &mut Vec<u8>, m: &u32) {
+    int(out, Some(u64::from(*m)));
+}
+
+fn addr_each<T: AsRef<str>>(out: &mut Vec<u8>, a: &T) {
+    string(out, a.as_ref());
 }
 
 fn array_f32(out: &mut Vec<u8>, items: &[f32]) {
@@ -239,6 +274,7 @@ fn disk(out: &mut Vec<u8>, d: &DiskSample) {
     o.int("used", Some(d.used));
     o.int("read_bps", d.read_bps);
     o.int("write_bps", d.write_bps);
+    o.f32("busy_pct", d.busy_pct);
     o.close();
 }
 
@@ -247,6 +283,8 @@ fn net(out: &mut Vec<u8>, n: &NetSample) {
     o.text("name", &n.name);
     o.int("rx_bps", n.rx_bps);
     o.int("tx_bps", n.tx_bps);
+    o.key("addrs");
+    array_of(o.out, n.addrs.iter(), addr_each);
     o.close();
 }
 
@@ -297,7 +335,12 @@ mod tests {
 
     fn render_with(r: &Reading, only: Option<&[&str]>) -> String {
         let view = View {
+            disks: None,
+            nets: None,
             by: Sort::Cpu,
+            reverse: false,
+            steady: false,
+            filter: None,
             flat: false,
             tree: false,
             all: false,
@@ -323,7 +366,7 @@ mod tests {
     fn an_empty_reading_is_nulls_and_zeros() {
         assert_eq!(
             render(&Reading::default()),
-            "{\"t\":0,\"cpu\":{\"pct\":null,\"threads\":[],\"mhz\":null,\"temp_c\":null,\"load\":null},\
+            "{\"t\":0,\"cpu\":{\"pct\":null,\"threads\":[],\"threads_mhz\":[],\"mhz\":null,\"temp_c\":null,\"power_w\":null,\"load\":null},\
              \"mem\":{\"total\":0,\"used\":0,\"available\":0,\"cached\":0,\"swap_total\":0,\
              \"swap_used\":0,\"pressure\":null},\"gpus\":[],\"sensors\":[],\"disks\":[],\
              \"nets\":[],\"battery\":null,\"host\":{\"uptime_s\":0,\"threads\":0},\"procs\":[]}\n"
@@ -356,6 +399,8 @@ mod tests {
                 mhz: None,
                 temp_c: None,
                 load: Some([1.0, 0.5, 0.25]),
+                threads_mhz: vec![],
+                power_w: None,
             },
             sensors: vec![Sensor {
                 chip: "k10temp".to_string(),

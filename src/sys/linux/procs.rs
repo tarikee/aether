@@ -505,6 +505,21 @@ fn keep_budget(root: &Root) -> usize {
 }
 
 /// One process in full, for `aether proc`. Files the process does not allow are `None`.
+/// The command line of a process: its arguments, NUL bytes as spaces, the first 256 bytes only.
+/// None when it cannot be read (another user's process, or one that has gone).
+pub fn command_line(root: &Root, pid: u32) -> Option<String> {
+    use std::io::Read;
+    let file = File::open(root.path(&format!("proc/{pid}/cmdline"))).ok()?;
+    let mut bytes = Vec::with_capacity(256);
+    file.take(256).read_to_end(&mut bytes).ok()?;
+    Some(
+        String::from_utf8_lossy(&bytes)
+            .replace('\0', " ")
+            .trim_end()
+            .to_string(),
+    )
+}
+
 pub fn detail(root: &Root, pid: u32) -> Option<ProcDetail> {
     let dir = root.path(&format!("proc/{pid}"));
     let raw = fs::read(dir.join("stat")).ok()?;
@@ -941,5 +956,28 @@ mod tests {
             .expect("sleep starts");
         assert_eq!(end(child.id(), false), Ok(()));
         let _ = child.wait();
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod command_line_tests {
+    use super::*;
+
+    #[test]
+    fn arguments_are_joined_and_cut_at_256_bytes() {
+        let base = std::env::temp_dir().join(format!("aether-cmdline-{}", std::process::id()));
+        let dir = base.join("proc/42");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("cmdline"), b"python3\0-m\0http.server\0").unwrap();
+        let root = Root::at(&base);
+        assert_eq!(
+            command_line(&root, 42).as_deref(),
+            Some("python3 -m http.server")
+        );
+        fs::write(dir.join("cmdline"), vec![b'a'; 300]).unwrap();
+        assert_eq!(command_line(&root, 42).map(|s| s.len()), Some(256));
+        assert_eq!(command_line(&root, 43), None);
+        let _ = fs::remove_dir_all(&base);
     }
 }
