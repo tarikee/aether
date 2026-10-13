@@ -1,0 +1,23 @@
+[package]
+name = "aether"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "The whole machine as numbers, on every OS."
+readme = "README.md"
+repository = "https://github.com/tarikee/aether"
+
+[dependencies]
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = "0.59"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
