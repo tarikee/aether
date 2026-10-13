@@ -163,6 +163,10 @@ fn discover(base: &Path, pid: u32, p: &mut Proc, buf: &mut [u8]) {
         .flatten()
         .filter_map(|fd| fd.file_name().to_str().and_then(|s| s.parse().ok()))
         .collect();
+    // The directory's order is not fixed, so the lowest descriptor is the one kept for a client
+    // that two descriptors share, on every machine.
+    let mut listed = listed;
+    listed.sort_unstable();
     // A number no longer listed was closed, so a later descriptor with it is looked at again.
     p.plain.retain(|fd| listed.contains(fd));
     for num in listed {
