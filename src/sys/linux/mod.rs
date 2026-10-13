@@ -14,6 +14,7 @@ pub mod reader;
 pub mod sensors;
 
 pub use battery::Battery;
+pub use calls::send_signal;
 pub use cpu::Cpu;
 pub use disk::Disks;
 pub use gpu::{GpuProcs, Gpus};
