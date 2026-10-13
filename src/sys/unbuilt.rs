@@ -33,6 +33,10 @@ pub fn end(_pid: u32, _force: bool) -> Result<(), EndError> {
 }
 
 /// One process in full.
+pub fn command_line(_root: &Root, _pid: u32) -> Option<String> {
+    None
+}
+
 pub fn detail(_root: &Root, _pid: u32) -> Option<ProcDetail> {
     None
 }

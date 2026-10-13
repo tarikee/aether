@@ -1,9 +1,12 @@
 //! `aether` (live, or once with `--once`): the readings, written out.
 
-use crate::cli::{Parsed, Sort};
+use crate::cli::{compare, Keys, Parsed, Sort, View};
 use crate::out::{json, text};
-use aether::sys::{Battery, Cpu, Disks, Gpus, Host, Mem, Nets, Proc, Procs, Root, Sensors};
+use aether::sys::{
+    command_line, Battery, Cpu, Disks, Gpus, Host, Mem, Nets, Proc, Procs, Root, Sensors,
+};
 use aether::Reading;
+use std::collections::HashMap;
 use std::io::{self, IsTerminal, Write};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
@@ -107,7 +110,7 @@ fn fill_vec<T: Clone>(dst: &mut Vec<T>, src: &[T]) {
     }
 }
 
-/// The key a process is sorted by. A process without the number sorts last.
+/// The number a numeric key sorts by. A process without the number sorts last.
 fn key(p: &Proc, by: Sort) -> f64 {
     let value = match by {
         Sort::Cpu => p.cpu_pct.map(f64::from),
@@ -117,13 +120,84 @@ fn key(p: &Proc, by: Sort) -> f64 {
             (None, None) => None,
             (r, w) => Some(r.unwrap_or(0).saturating_add(w.unwrap_or(0)) as f64),
         },
+        // The other keys compare their own fields; there is no number to sort by.
+        Sort::Pid | Sort::User | Sort::Threads | Sort::Name | Sort::Age => None,
     };
     value.unwrap_or(-1.0)
 }
 
-/// Puts the processes in the order `--by` asks for: the biggest first, ties by pid.
-pub(crate) fn order(procs: &mut [Proc], by: Sort) {
-    procs.sort_unstable_by(|a, b| key(b, by).total_cmp(&key(a, by)).then(a.pid.cmp(&b.pid)));
+/// Puts the processes in the order the view asks for. `rank` is the number the numeric keys
+/// sort by (the raw key, or the smoothed one under `--steady`).
+pub(crate) fn order(procs: &mut [Proc], view: &View, rank: &dyn Fn(&Proc) -> f64) {
+    procs.sort_unstable_by(|a, b| compare(view, &keys(a, rank), &keys(b, rank)));
+}
+
+fn keys<'a>(p: &'a Proc, rank: &dyn Fn(&Proc) -> f64) -> Keys<'a> {
+    Keys {
+        pid: p.pid,
+        uid: p.uid,
+        threads: p.threads,
+        started: p.started_s,
+        name: &p.name,
+        rank: rank(p),
+    }
+}
+
+/// Whether `hay` contains `needle`, ASCII case ignored (an empty needle is always found).
+fn contains_ci(hay: &str, needle: &str) -> bool {
+    let (h, n) = (hay.as_bytes(), needle.as_bytes());
+    n.is_empty() || h.windows(n.len()).any(|w| w.eq_ignore_ascii_case(n))
+}
+
+/// A command line read for `--filter`, kept per process while the process lives.
+/// The tick it was last seen on is kept with it, so a process that ends drops out.
+type Commands = HashMap<(u32, u64), (u64, Option<String>)>;
+
+/// Whether a process stays under `--filter`: its name, or else its command line, contains the
+/// text. The command line is read once per process, and only when the name does not match.
+fn keeps(p: &Proc, needle: &str, commands: &mut Commands, tick: u64, root: &Root) -> bool {
+    if contains_ci(&p.name, needle) {
+        return true;
+    }
+    let entry = commands
+        .entry((p.pid, p.started_s))
+        .or_insert_with(|| (tick, command_line(root, p.pid)));
+    entry.0 = tick;
+    entry
+        .1
+        .as_deref()
+        .is_some_and(|line| contains_ci(line, needle))
+}
+
+/// The smoothed numbers `--steady` sorts by: half the last value and half the new one, kept per
+/// process (pid and start time). A missing value stays missing.
+#[derive(Default)]
+struct Steady {
+    values: HashMap<(u32, u64), f64>,
+    scratch: HashMap<(u32, u64), f64>,
+}
+
+impl Steady {
+    fn update(&mut self, procs: &[Proc], by: Sort) {
+        self.scratch.clear();
+        for p in procs {
+            let raw = key(p, by);
+            let id = (p.pid, p.started_s);
+            let value = match self.values.get(&id) {
+                Some(&old) if old >= 0.0 && raw >= 0.0 => (old + raw) / 2.0,
+                _ => raw,
+            };
+            self.scratch.insert(id, value);
+        }
+        std::mem::swap(&mut self.values, &mut self.scratch);
+    }
+
+    fn of(&self, p: &Proc) -> f64 {
+        self.values
+            .get(&(p.pid, p.started_s))
+            .copied()
+            .unwrap_or(-1.0)
+    }
 }
 
 /// Writes the readings: one when `--once`, else one a tick until the output fails.
@@ -140,6 +214,10 @@ fn frames(
     let interval = Duration::try_from_secs_f64(parsed.interval_s).unwrap_or(Duration::MAX);
     let mut reading = Reading::default();
     let mut buf: Vec<u8> = Vec::with_capacity(64 * 1024);
+    let root = Root::system();
+    let mut commands = Commands::new();
+    let mut steady = Steady::default();
+    let mut tick = 0u64;
     // A first reading, then a wait, so the rates have two readings to work from.
     read(&mut reading);
     // `--once` waits as long as `-i` asked, or 250 ms when `-i` was not given.
@@ -152,7 +230,20 @@ fn frames(
     loop {
         let started = Instant::now();
         read(&mut reading);
-        order(&mut reading.procs, parsed.view.by);
+        if let Some(needle) = parsed.view.filter.as_deref() {
+            tick += 1;
+            reading
+                .procs
+                .retain(|p| keeps(p, needle, &mut commands, tick, &root));
+            commands.retain(|_, e| e.0 == tick);
+        }
+        let smooth = parsed.view.steady && parsed.view.by.smooths();
+        if smooth {
+            steady.update(&reading.procs, parsed.view.by);
+        }
+        let by = parsed.view.by;
+        let rank = |p: &Proc| if smooth { steady.of(p) } else { key(p, by) };
+        order(&mut reading.procs, &parsed.view, &rank);
         buf.clear();
         if live && tty && !parsed.json {
             buf.extend_from_slice(CLEAR);
@@ -165,7 +256,7 @@ fn frames(
             } else {
                 None
             };
-            text::write(&reading, &parsed.view, &mut buf, screen);
+            text::write(&reading, &parsed.view, &mut buf, screen, &rank);
         }
         out.write_all(&buf)?;
         out.flush()?;
@@ -184,6 +275,23 @@ mod tests {
 
     fn args(line: &str) -> Vec<String> {
         line.split_whitespace().map(str::to_string).collect()
+    }
+
+    /// Sorts the way the live view does, with the raw key for `by`.
+    fn sorted(v: &mut [Proc], by: Sort) {
+        let view = View {
+            by,
+            reverse: false,
+            steady: false,
+            filter: None,
+            flat: false,
+            all: false,
+            only: None,
+            tree: false,
+            disks: None,
+            nets: None,
+        };
+        order(v, &view, &|p| key(p, by));
     }
 
     fn proc(
@@ -265,7 +373,7 @@ mod tests {
             proc(3, Some(5.0), 0, None, None),
             proc(4, Some(9.0), 0, None, None),
         ];
-        order(&mut v, Sort::Cpu);
+        sorted(&mut v, Sort::Cpu);
         assert_eq!(pids(&v), vec![4, 2, 3, 1]);
     }
 
@@ -275,9 +383,9 @@ mod tests {
             proc(1, None, 10, Some(2.0), None),
             proc(2, None, 30, None, None),
         ];
-        order(&mut v, Sort::Mem);
+        sorted(&mut v, Sort::Mem);
         assert_eq!(pids(&v), vec![2, 1]);
-        order(&mut v, Sort::Gpu);
+        sorted(&mut v, Sort::Gpu);
         assert_eq!(pids(&v), vec![1, 2]);
     }
 
@@ -288,7 +396,7 @@ mod tests {
             proc(2, None, 0, None, Some((1, 20))),
             proc(3, None, 0, None, None),
         ];
-        order(&mut v, Sort::Disk);
+        sorted(&mut v, Sort::Disk);
         assert_eq!(pids(&v), vec![2, 1, 3]);
     }
 
@@ -358,5 +466,18 @@ mod tests {
         assert_eq!(dst, vec![String::from("a")]);
         fill_vec(&mut dst, &[String::from("b"), String::from("c")]);
         assert_eq!(dst, vec![String::from("b"), String::from("c")]);
+    }
+
+    #[test]
+    fn steady_halves_the_old_value_and_a_filter_ignores_case() {
+        let mut st = Steady::default();
+        let mut v = vec![proc(7, Some(10.0), 0, None, None)];
+        st.update(&v, Sort::Cpu);
+        assert_eq!(st.of(&v[0]), 10.0);
+        v[0].cpu_pct = Some(30.0);
+        st.update(&v, Sort::Cpu);
+        assert_eq!(st.of(&v[0]), 20.0);
+        assert!(contains_ci("Firefox --new-window", "FIREFOX"));
+        assert!(!contains_ci("abc", "abcd"));
     }
 }

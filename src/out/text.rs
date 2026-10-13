@@ -1,6 +1,6 @@
 //! The text view for people: one reading, sorted and grouped as the view asks.
 
-use crate::cli::{Sort, View};
+use crate::cli::{compare, Keys, Sort, View};
 use crate::out::tree;
 use aether::sys::{
     BatterySample, CpuSample, DiskSample, GpuSample, HostSample, MemSample, NetSample, Proc,
@@ -16,7 +16,13 @@ const TABLE_LINES: usize = 5;
 /// Appends one reading as text to `out`. A part the view does not name is left out. With
 /// `screen` (the rows of a terminal) the process rows stop where the screen ends; `None` prints
 /// every row.
-pub fn write(reading: &Reading, view: &View, out: &mut Vec<u8>, screen: Option<usize>) {
+pub fn write(
+    reading: &Reading,
+    view: &View,
+    out: &mut Vec<u8>,
+    screen: Option<usize>,
+    rank: &dyn Fn(&Proc) -> f64,
+) {
     let start = out.len();
     if shown(view, "host") {
         host(out, &reading.host);
@@ -45,7 +51,7 @@ pub fn write(reading: &Reading, view: &View, out: &mut Vec<u8>, screen: Option<u
     if shown(view, "procs") {
         let above = out[start..].iter().filter(|b| **b == b'\n').count();
         let room = screen.map(|rows| rows.saturating_sub(above + TABLE_LINES));
-        procs(out, &reading.procs, view, room);
+        procs(out, &reading.procs, view, room, rank);
     }
 }
 
@@ -214,6 +220,11 @@ fn battery(out: &mut Vec<u8>, b: Option<&BatterySample>) {
 /// One row of the process table, before its cells are made.
 struct Row {
     pid: Option<u32>,
+    uid: u32,
+    /// The newest start time of the processes in the row.
+    started: u64,
+    /// The number the numeric keys sort by: the sum for a group, missing (-1) only when all are.
+    rank: f64,
     name: String,
     count: u32,
     threads: u32,
@@ -226,9 +237,12 @@ struct Row {
 }
 
 impl Row {
-    fn of(p: &Proc) -> Row {
+    fn of(p: &Proc, rank: f64) -> Row {
         Row {
             pid: Some(p.pid),
+            uid: p.uid,
+            started: p.started_s,
+            rank,
             name: p.name.clone(),
             count: 1,
             threads: p.threads,
@@ -241,8 +255,27 @@ impl Row {
         }
     }
 
-    /// Adds another process of the same name to this group.
+    fn keys(&self) -> Keys<'_> {
+        Keys {
+            pid: self.pid.unwrap_or(0),
+            uid: self.uid,
+            threads: self.threads,
+            started: self.started,
+            name: &self.name,
+            rank: self.rank,
+        }
+    }
+
+    /// Adds another process of the same name to this group: the lowest pid stays, the uid is
+    /// the first member's, and the start is the newest.
     fn absorb(&mut self, o: &Row) {
+        self.pid = self.pid.min(o.pid);
+        self.started = self.started.max(o.started);
+        self.rank = match (self.rank < 0.0, o.rank < 0.0) {
+            (true, _) => o.rank,
+            (false, true) => self.rank,
+            (false, false) => self.rank + o.rank,
+        };
         self.count += o.count;
         self.threads += o.threads;
         self.cpu = add(self.cpu, o.cpu);
@@ -263,22 +296,24 @@ fn add<T: std::ops::Add<Output = T> + Copy>(a: Option<T>, b: Option<T>) -> Optio
     }
 }
 
-/// The number a row is sorted by; a missing reading sorts last.
-fn key(by: Sort, r: &Row) -> f64 {
-    match by {
-        Sort::Cpu => r.cpu.map_or(-1.0, f64::from),
-        Sort::Mem => r.mem as f64,
-        Sort::Gpu => r.gpu.map_or(-1.0, f64::from),
-        Sort::Disk => add(r.read, r.write).map_or(-1.0, |v| v as f64),
-    }
-}
-
-fn sort_name(by: Sort) -> &'static str {
-    match by {
+/// The key's name, as the header says it.
+fn sort_name(view: &View) -> String {
+    let name = match view.by {
         Sort::Cpu => "cpu",
         Sort::Mem => "memory",
         Sort::Gpu => "gpu",
         Sort::Disk => "disk",
+        Sort::Pid => "pid",
+        Sort::User => "user",
+        Sort::Threads => "threads",
+        Sort::Name => "name",
+        Sort::Age => "age",
+    };
+    match (view.reverse, view.steady && view.by.smooths()) {
+        (false, false) => name.to_string(),
+        (true, false) => format!("{name}, reversed"),
+        (false, true) => format!("{name}, steady"),
+        (true, true) => format!("{name}, steady, reversed"),
     }
 }
 
@@ -295,18 +330,15 @@ fn group(mut rows: Vec<Row>) -> Vec<Row> {
     out
 }
 
-/// The order of rows: the key, biggest first; then the name, then the pid.
-fn by_rows(by: Sort, a: &Row, b: &Row) -> std::cmp::Ordering {
-    key(by, b)
-        .total_cmp(&key(by, a))
-        .then_with(|| a.name.cmp(&b.name))
-        .then_with(|| a.pid.cmp(&b.pid))
-}
-
-fn procs(out: &mut Vec<u8>, procs: &[Proc], view: &View, room: Option<usize>) {
+fn procs(
+    out: &mut Vec<u8>,
+    procs: &[Proc],
+    view: &View,
+    room: Option<usize>,
+    rank: &dyn Fn(&Proc) -> f64,
+) {
     let grouped = !view.flat && !view.tree;
-    let by = view.by;
-    let mut rows: Vec<Row> = procs.iter().map(Row::of).collect();
+    let mut rows: Vec<Row> = procs.iter().map(|p| Row::of(p, rank(p))).collect();
     if grouped {
         rows = group(rows);
     }
@@ -314,7 +346,9 @@ fn procs(out: &mut Vec<u8>, procs: &[Proc], view: &View, room: Option<usize>) {
     let mut marks: Vec<String> = Vec::new();
     if view.tree {
         let mut tree = tree::shared();
-        tree.build(procs, |a, b| by_rows(by, &rows[a], &rows[b]));
+        tree.build(procs, |a, b| {
+            compare(view, &rows[a].keys(), &rows[b].keys())
+        });
         rows = tree
             .rows()
             .iter()
@@ -322,11 +356,11 @@ fn procs(out: &mut Vec<u8>, procs: &[Proc], view: &View, room: Option<usize>) {
                 let mut mark = String::new();
                 tree.draw(r, &mut mark);
                 marks.push(mark);
-                Row::of(&procs[r.index])
+                Row::of(&procs[r.index], rank(&procs[r.index]))
             })
             .collect();
     } else {
-        rows.sort_by(|a, b| by_rows(by, a, b));
+        rows.sort_by(|a, b| compare(view, &a.keys(), &b.keys()));
     }
     let total = rows.len();
     if let Some(room) = room {
@@ -360,7 +394,7 @@ fn procs(out: &mut Vec<u8>, procs: &[Proc], view: &View, room: Option<usize>) {
     } else {
         "single processes"
     };
-    line(out, "procs", &format!("by {}, {how}", sort_name(by)));
+    line(out, "procs", &format!("by {}, {how}", sort_name(view)));
     let left = if grouped { 0 } else { 1 };
     table(out, &head, &body, left);
     if rows.len() < total {
@@ -504,6 +538,9 @@ mod tests {
             disks: None,
             nets: None,
             by,
+            reverse: false,
+            steady: false,
+            filter: None,
             flat,
             tree: false,
             all: false,
@@ -532,7 +569,12 @@ mod tests {
 
     fn render(r: &Reading, v: &View) -> String {
         let mut out = Vec::new();
-        write(r, v, &mut out, None);
+        let by = v.by;
+        let rank = |p: &Proc| match by {
+            Sort::Mem => p.mem as f64,
+            _ => f64::from(p.cpu_pct.unwrap_or(-1.0)),
+        };
+        write(r, v, &mut out, None, &rank);
         String::from_utf8(out).unwrap_or_default()
     }
 
@@ -612,6 +654,39 @@ mod tests {
     }
 
     #[test]
+    fn a_tree_orders_siblings_by_the_view_and_a_missing_parent_is_a_root() {
+        let kids = vec![
+            proc(5, "alpha", 1.0, 1),
+            Proc {
+                ppid: 5,
+                ..proc(6, "beta", 1.0, 1)
+            },
+            Proc {
+                ppid: 5,
+                ..proc(7, "gamma", 1.0, 1)
+            },
+            Proc {
+                ppid: 99,
+                ..proc(8, "delta", 1.0, 1)
+            },
+        ];
+        let places = |reverse: bool| {
+            let mut v = view(None, false, Sort::Name);
+            v.tree = true;
+            v.reverse = reverse;
+            let r = Reading {
+                procs: kids.clone(),
+                ..Reading::default()
+            };
+            let text = render(&r, &v);
+            ["alpha", "beta", "gamma", "delta"].map(|n| text.find(n).unwrap_or(usize::MAX))
+        };
+        let (fwd, rev) = (places(false), places(true));
+        assert!(fwd.iter().all(|&at| at != usize::MAX));
+        assert_eq!(fwd[1] < fwd[2], !(rev[1] < rev[2]));
+    }
+
+    #[test]
     fn flat_processes_sort_by_memory() {
         let r = Reading {
             procs: vec![proc(10, "a", 9.0, 100), proc(11, "b", 1.0, 900)],
@@ -627,8 +702,8 @@ mod tests {
 
     #[test]
     fn group_sums_what_the_processes_use() {
-        let mut a = Row::of(&proc(1, "x", 2.0, 10));
-        let b = Row::of(&proc(2, "x", 3.0, 20));
+        let mut a = Row::of(&proc(1, "x", 2.0, 10), 2.0);
+        let b = Row::of(&proc(2, "x", 3.0, 20), 3.0);
         a.absorb(&b);
         assert_eq!(a.count, 2);
         assert_eq!(a.cpu, Some(5.0));
