@@ -1,0 +1,137 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="610" viewBox="0 0 880 610">
+<rect x="0.5" y="0.5" width="879" height="609" rx="10" ry="10" fill="#0d1117" stroke="#30363d" stroke-width="1"/>
+<g font-family="ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;, monospace" font-size="14">
+<text x="20.0" y="34.5" fill="#c9d1d9" textLength="814.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> aether                                                            up 3d 04:12   12 threads   1.0</text>
+<text x="834.8" y="34.5" fill="#6e7681" textLength="16.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> s</text>
+<text x="28.4" y="53.5" fill="#6e7681" textLength="25.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">── </text>
+<text x="53.6" y="53.5" fill="#39c5cf" textLength="25.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">CPU</text>
+<text x="78.8" y="53.5" fill="#6e7681" textLength="772.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> ───────────────────────────────────────────────────────────────────────────────────────────</text>
+<text x="45.2" y="72.5" fill="#39c5cf" textLength="16.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">23</text>
+<text x="62.0" y="72.5" fill="#6e7681" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">%</text>
+<text x="95.6" y="72.5" fill="#39c5cf" textLength="42.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">████▋</text>
+<text x="137.6" y="72.5" fill="#6e7681" textLength="126.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">░░░░░░░░░░░░░░░</text>
+<text x="263.6" y="72.5" fill="#c9d1d9" textLength="50.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">   3.9</text>
+<text x="314.0" y="72.5" fill="#6e7681" textLength="33.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> GHz</text>
+<text x="347.6" y="72.5" fill="#c9d1d9" textLength="42.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">   52</text>
+<text x="389.6" y="72.5" fill="#6e7681" textLength="25.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> °C</text>
+<text x="414.8" y="72.5" fill="#c9d1d9" textLength="42.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">   38</text>
+<text x="456.8" y="72.5" fill="#6e7681" textLength="16.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> W</text>
+<text x="498.8" y="72.5" fill="#6e7681" textLength="42.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">load </text>
+<text x="540.8" y="72.5" fill="#c9d1d9" textLength="92.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">1.2 0.9 0.8</text>
+<text x="20.0" y="91.5" fill="#c9d1d9" textLength="546.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">   ▂▂▃▃▄▄▃▂▂▂▂▂▃▅▅▄▃▃▂▂▂▂▃▃▃▂▂▂▂▃▄▅▄▃▂▂▂▂▂▂▂▃▃▄▄▃▂▂▂▂▂▃▃▂▂▃▃▃▃▃  </text>
+<text x="566.0" y="91.5" fill="#6e7681" textLength="75.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">last 60 s</text>
+<text x="20.0" y="110.5" fill="#c9d1d9" textLength="42.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">   0 </text>
+<text x="62.0" y="110.5" fill="#39c5cf" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">▄</text>
+<text x="70.4" y="110.5" fill="#c9d1d9" textLength="42.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">   1 </text>
+<text x="112.4" y="110.5" fill="#39c5cf" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">▂</text>
+<text x="120.8" y="110.5" fill="#c9d1d9" textLength="42.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">   2 </text>
+<text x="162.8" y="110.5" fill="#39c5cf" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">▂</text>
+<text x="171.2" y="110.5" fill="#c9d1d9" textLength="42.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">   3 </text>
+<text x="213.2" y="110.5" fill="#39c5cf" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">▃</text>
+<text x="221.6" y="110.5" fill="#c9d1d9" textLength="42.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">   4 </text>
+<text x="263.6" y="110.5" fill="#39c5cf" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">▁</text>
+<text x="272.0" y="110.5" fill="#c9d1d9" textLength="42.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">   5 </text>
+<text x="314.0" y="110.5" fill="#39c5cf" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">▃</text>
+<text x="322.4" y="110.5" fill="#c9d1d9" textLength="42.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">   6 </text>
+<text x="364.4" y="110.5" fill="#39c5cf" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">▂</text>
+<text x="372.8" y="110.5" fill="#c9d1d9" textLength="42.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">   7 </text>
+<text x="414.8" y="110.5" fill="#39c5cf" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">▁</text>
+<text x="423.2" y="110.5" fill="#c9d1d9" textLength="42.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">   8 </text>
+<text x="465.2" y="110.5" fill="#39c5cf" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">▅</text>
+<text x="473.6" y="110.5" fill="#c9d1d9" textLength="42.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">   9 </text>
+<text x="515.6" y="110.5" fill="#39c5cf" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">▁</text>
+<text x="524.0" y="110.5" fill="#c9d1d9" textLength="50.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">   10 </text>
+<text x="574.4" y="110.5" fill="#39c5cf" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">▄</text>
+<text x="582.8" y="110.5" fill="#c9d1d9" textLength="50.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">   11 </text>
+<text x="633.2" y="110.5" fill="#39c5cf" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">▃</text>
+<text x="28.4" y="129.5" fill="#6e7681" textLength="25.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">── </text>
+<text x="53.6" y="129.5" fill="#39c5cf" textLength="50.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">Memory</text>
+<text x="104.0" y="129.5" fill="#6e7681" textLength="747.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> ────────────────────────────────────────────────────────────────────────────────────────</text>
+<text x="20.0" y="148.5" fill="#c9d1d9" textLength="42.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">   10</text>
+<text x="62.0" y="148.5" fill="#6e7681" textLength="33.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> of </text>
+<text x="95.6" y="148.5" fill="#c9d1d9" textLength="16.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">16</text>
+<text x="112.4" y="148.5" fill="#6e7681" textLength="33.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> GiB</text>
+<text x="171.2" y="148.5" fill="#39c5cf" textLength="109.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">████████████▌</text>
+<text x="280.4" y="148.5" fill="#6e7681" textLength="58.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">░░░░░░░</text>
+<text x="364.4" y="148.5" fill="#6e7681" textLength="58.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">cached </text>
+<text x="423.2" y="148.5" fill="#c9d1d9" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">3</text>
+<text x="431.6" y="148.5" fill="#6e7681" textLength="33.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> GiB</text>
+<text x="490.4" y="148.5" fill="#6e7681" textLength="42.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">swap </text>
+<text x="532.4" y="148.5" fill="#c9d1d9" textLength="25.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">200</text>
+<text x="557.6" y="148.5" fill="#6e7681" textLength="67.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> MiB of </text>
+<text x="624.8" y="148.5" fill="#c9d1d9" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">8</text>
+<text x="633.2" y="148.5" fill="#6e7681" textLength="33.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> GiB</text>
+<text x="28.4" y="167.5" fill="#6e7681" textLength="25.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">── </text>
+<text x="53.6" y="167.5" fill="#39c5cf" textLength="25.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">GPU</text>
+<text x="78.8" y="167.5" fill="#c9d1d9" textLength="109.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  Example 580</text>
+<text x="188.0" y="167.5" fill="#6e7681" textLength="663.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> ──────────────────────────────────────────────────────────────────────────────</text>
+<text x="45.2" y="186.5" fill="#39c5cf" textLength="16.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">41</text>
+<text x="62.0" y="186.5" fill="#6e7681" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">%</text>
+<text x="95.6" y="186.5" fill="#39c5cf" textLength="75.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">████████▏</text>
+<text x="171.2" y="186.5" fill="#6e7681" textLength="92.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">░░░░░░░░░░░</text>
+<text x="288.8" y="186.5" fill="#6e7681" textLength="42.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">VRAM </text>
+<text x="330.8" y="186.5" fill="#c9d1d9" textLength="25.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">2.1</text>
+<text x="356.0" y="186.5" fill="#6e7681" textLength="33.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> of </text>
+<text x="389.6" y="186.5" fill="#c9d1d9" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">4</text>
+<text x="398.0" y="186.5" fill="#6e7681" textLength="33.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> GiB</text>
+<text x="431.6" y="186.5" fill="#c9d1d9" textLength="42.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">   67</text>
+<text x="473.6" y="186.5" fill="#6e7681" textLength="25.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> °C</text>
+<text x="498.8" y="186.5" fill="#c9d1d9" textLength="58.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">   1180</text>
+<text x="557.6" y="186.5" fill="#6e7681" textLength="33.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> rpm</text>
+<text x="591.2" y="186.5" fill="#c9d1d9" textLength="42.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">   96</text>
+<text x="633.2" y="186.5" fill="#6e7681" textLength="16.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> W</text>
+<text x="28.4" y="205.5" fill="#6e7681" textLength="25.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">── </text>
+<text x="53.6" y="205.5" fill="#39c5cf" textLength="42.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">Disks</text>
+<text x="95.6" y="205.5" fill="#6e7681" textLength="336.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> ───────────────────────────────────────</text>
+<text x="448.4" y="205.5" fill="#6e7681" textLength="25.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">── </text>
+<text x="473.6" y="205.5" fill="#39c5cf" textLength="58.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">Network</text>
+<text x="532.4" y="205.5" fill="#6e7681" textLength="319.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> ─────────────────────────────────────</text>
+<text x="20.0" y="224.5" fill="#c9d1d9" textLength="109.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">   /      212</text>
+<text x="129.2" y="224.5" fill="#6e7681" textLength="33.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> of </text>
+<text x="162.8" y="224.5" fill="#c9d1d9" textLength="25.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">465</text>
+<text x="188.0" y="224.5" fill="#6e7681" textLength="33.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> GiB</text>
+<text x="246.8" y="224.5" fill="#6e7681" textLength="42.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">busy </text>
+<text x="288.8" y="224.5" fill="#c9d1d9" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">3</text>
+<text x="297.2" y="224.5" fill="#6e7681" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">%</text>
+<text x="305.6" y="224.5" fill="#c9d1d9" textLength="327.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">                   eth0   192.0.2.10   </text>
+<text x="633.2" y="224.5" fill="#6e7681" textLength="16.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">↓ </text>
+<text x="650.0" y="224.5" fill="#c9d1d9" textLength="25.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">2.8</text>
+<text x="675.2" y="224.5" fill="#6e7681" textLength="50.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> MiB/s</text>
+<text x="750.8" y="224.5" fill="#6e7681" textLength="16.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">↑ </text>
+<text x="767.6" y="224.5" fill="#c9d1d9" textLength="25.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">114</text>
+<text x="792.8" y="224.5" fill="#6e7681" textLength="50.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> KiB/s</text>
+<text x="20.0" y="243.5" fill="#c9d1d9" textLength="109.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">   /data  1.1</text>
+<text x="129.2" y="243.5" fill="#6e7681" textLength="33.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> of </text>
+<text x="162.8" y="243.5" fill="#c9d1d9" textLength="25.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">1.8</text>
+<text x="188.0" y="243.5" fill="#6e7681" textLength="33.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> TiB</text>
+<text x="246.8" y="243.5" fill="#6e7681" textLength="42.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">busy </text>
+<text x="288.8" y="243.5" fill="#c9d1d9" textLength="16.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">34</text>
+<text x="305.6" y="243.5" fill="#6e7681" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">%</text>
+<text x="339.2" y="243.5" fill="#6e7681" textLength="16.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">w </text>
+<text x="356.0" y="243.5" fill="#c9d1d9" textLength="16.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">12</text>
+<text x="372.8" y="243.5" fill="#6e7681" textLength="50.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> MiB/s</text>
+<text x="423.2" y="243.5" fill="#c9d1d9" textLength="428.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">     ▄▁▆▃█▅▂▇▄▂▆▄▁▆▃█▅▃▇▅▂▇▄▁▆▃█▅▃▇▅▂▇▄▂▆▄▁▆▃█▅▂▇▄▆</text>
+<text x="28.4" y="262.5" fill="#6e7681" textLength="25.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">── </text>
+<text x="53.6" y="262.5" fill="#39c5cf" textLength="75.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">Processes</text>
+<text x="129.2" y="262.5" fill="#c9d1d9" textLength="84.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  by cpu ▾</text>
+<text x="213.2" y="262.5" fill="#6e7681" textLength="638.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> ───────────────────────────────────────────────────────── 15 in 11 apps ───</text>
+<text x="70.4" y="281.5" fill="#6e7681" textLength="25.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">CPU</text>
+<text x="162.8" y="281.5" fill="#6e7681" textLength="25.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">MEM</text>
+<text x="221.6" y="281.5" fill="#6e7681" textLength="25.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">GPU</text>
+<text x="305.6" y="281.5" fill="#6e7681" textLength="33.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">VRAM</text>
+<text x="414.8" y="281.5" fill="#6e7681" textLength="33.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">DISK</text>
+<text x="465.2" y="281.5" fill="#6e7681" textLength="25.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">APP</text>
+<text x="20.0" y="300.5" fill="#c9d1d9" textLength="504.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">     9.1%    2.3 GiB    31%    1.4 GiB            —  game ×3</text>
+<text x="20.0" y="319.5" fill="#c9d1d9" textLength="529.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">     4.0%    3.0 GiB     6%    307 MiB            —  browser ×2</text>
+<text x="20.0" y="338.5" fill="#c9d1d9" textLength="495.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> ▸   2.3%    410 MiB      —          —            —  editor</text>
+<text x="20.0" y="357.5" fill="#c9d1d9" textLength="478.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">     1.2%     96 MiB      —          —    1.0 MiB/s  sync</text>
+<text x="20.0" y="376.5" fill="#c9d1d9" textLength="537.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">     1.1%    140 MiB      —          —            —  terminal ×2</text>
+<text x="20.0" y="395.5" fill="#c9d1d9" textLength="487.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">     1.0%    210 MiB      —          —            —  music</text>
+<text x="20.0" y="414.5" fill="#c9d1d9" textLength="478.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">     0.9%    900 MiB      —          —            —  chat</text>
+<text x="20.0" y="433.5" fill="#c9d1d9" textLength="487.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">     0.5%     64 MiB      —          —            —  files</text>
+<text x="20.0" y="452.5" fill="#c9d1d9" textLength="478.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">     0.4%    180 MiB      —          —            —  mail</text>
+<text x="20.0" y="471.5" fill="#c9d1d9" textLength="487.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">     0.4%     38 MiB      —          —            —  notes</text>
+<text x="20.0" y="490.5" fill="#c9d1d9" textLength="487.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">     0.1%     12 MiB      —          —            —  shell</text>
+<text x="28.4" y="585.5" fill="#6e7681" textLength="663.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">↑↓ select   ←→ sort   / filter   t tree   k end   space pause   ? keys   q quit</text>
+</g>
+</svg>

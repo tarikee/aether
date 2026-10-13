@@ -1,9 +1,25 @@
 # aether
 
 The whole machine as numbers: CPU, memory, GPUs, sensors, disks, network, battery, and every
-process with what it uses. It prints numbers and leaves the drawing to whoever reads them.
+process with what it uses. In a terminal it draws a full-screen view; piped, it prints numbers.
 
 It is a Rust library (the core) with a small command-line program on top. Licence GPL-3.0-only.
+
+<img src="assets/view.svg" alt="The aether view in a 100 by 30 terminal: the CPU with its history and threads, memory, a GPU, disks and network side by side, sensors, and the process table sorted by CPU." width="880">
+
+The values in the picture are made up.
+
+## Install
+
+Needs a stable Rust toolchain.
+
+    cargo install --git https://github.com/tarikee/aether
+
+From a clone:
+
+    cargo install --path .
+
+Or build without installing: `cargo build --release`, then `target/release/aether`.
 
 ## What it shows
 
@@ -11,19 +27,32 @@ It is a Rust library (the core) with a small command-line program on top. Licenc
 - Memory: used, available, cached, swap, pressure.
 - GPUs: use, VRAM, temperature, fan speed, power.
 - Every sensor: temperatures, fans and power, with names.
-- Disks: space used, and read and write rates, per mount.
-- Network: receive and send rates per interface.
+- Disks: space used, busy time, and read and write rates, per mount.
+- Network: receive and send rates per interface, with a history line.
 - Battery, on a laptop, and uptime.
 - Every process: CPU %, memory, GPU % and VRAM, disk read and write rates, threads, user and age.
   Processes are grouped by app by default.
 
-## Install
+The full-screen view is shown when the output is a terminal, and not with `--once`, `--json` or
+`--plain`. It needs a UTF-8 locale and at least 60 columns and 15 rows.
 
-Needs a stable Rust toolchain.
+## The view's keys
 
-    cargo build --release
-
-The program is `target/release/aether`.
+| Key | What it does |
+|---|---|
+| `↑ ↓  PgUp PgDn` | select a process |
+| `Home End` | the first or the last one |
+| `← →` | the sort key |
+| `r` | reverse the order |
+| `t` | tree (f: flat; grouped is the default) |
+| `/` | filter by name or command line; Enter keeps it, Esc clears it |
+| `space` | pause the list |
+| `Enter` | the selected process in full |
+| `k  K` | end it, or force it (then y or n) |
+| `+  -` | the interval |
+| `s` | every sensor, in place of the table |
+| `?` | this help |
+| `q` | quit |
 
 ## Commands
 
@@ -31,15 +60,16 @@ The program is `target/release/aether`.
 aether: the whole machine as numbers.
 
 Usage:
-  aether [-i SECS] [--by cpu|mem|gpu|disk] [--flat] [--all] [--only LIST] [--json]
+  aether [-i SECS] [--by KEY] [--reverse] [--steady] [--filter TEXT] [--flat] [--all] [--only LIST] [--json]
       live: every vital and every process, rewritten in place
   aether --once [same options]
       one reading, then exit
   aether proc PID|NAME
       one process in full: command line, program, folder, parents, CPU time, open files
-  aether kill PID|NAME [--force] [-y]
+  aether kill PID|NAME [--force] [-y] [-s NAME|NUMBER]
       asks the process to stop and waits 3 s; says if it is still there.
       --force kills it. By NAME it lists the matches and asks first; -y skips the question.
+      -s sends that one signal and does not wait.
   aether check
       what this machine and OS offer, and what is missing
   aether version
@@ -48,11 +78,24 @@ Usage:
 
 Options:
   -i, --interval SECS    seconds between live readings (default 1)
-  --by cpu|mem|gpu|disk  sort the processes (default cpu)
+  --by KEY               sort the processes: cpu (default), mem, gpu, disk, pid, user,
+                         threads, name, age (newest first; user is the uid)
+  --reverse              turn the order round
+  --steady               with --by cpu, gpu or disk: order by a smoothed value, so rows
+                         do not jump every tick (the numbers shown stay raw)
+  --filter TEXT          only processes whose name or command line contains TEXT
   --flat                 single processes, not grouped by app
+  --tree                 single processes, each under its parent
   --all                  print every row, past the screen's height
   --only LIST            only these parts, e.g. cpu,mem (default: everything)
+  --disk MOUNT[,MOUNT]   only these disks, by mount point (default: every disk)
+  --net NAME[,NAME]      only these network interfaces (default: every one)
   --json                 one JSON object per reading; a missing reading is null
+  --plain                the plain text view, not the full screen on a terminal
+  --no-color             the full screen without colour (NO_COLOR does the same)
+  --no-keys              the full screen takes no keys
+  -s, --signal NAME|NUMBER  kill: the signal to send (TERM, SIGSTOP, 19; 1 to 64)
+  --no-defaults          do not read the file of default arguments (aether/args)
 ```
 
 ## JSON
@@ -63,12 +106,12 @@ is `null`, never 0. Rates and percentages that need two readings are `null` unti
 | Key | Holds |
 |---|---|
 | `t` | time of the reading, in seconds |
-| `cpu` | `pct` (whole machine, %), `threads` (one % per thread), `mhz`, `temp_c`, `load` (1, 5 and 15 minute averages) |
+| `cpu` | `pct` (whole machine, %), `threads` and `threads_mhz` (one value per thread), `mhz`, `temp_c`, `power_w`, `load` (1, 5 and 15 minute averages) |
 | `mem` | `total`, `used`, `available`, `cached`, `swap_total`, `swap_used` (bytes); `pressure` (%) |
 | `gpus` | list: `name`, `vendor`, `pct`, `temp_c`, `power_w`, `vram_used`, `vram_total` (bytes), `fan_rpm` |
 | `sensors` | list: `chip`, `label`, `kind` (temp, fan or power), `value` |
-| `disks` | list: `mount`, `dev`, `total`, `used` (bytes), `read_bps`, `write_bps` |
-| `nets` | list: `name`, `rx_bps`, `tx_bps` |
+| `disks` | list: `mount`, `dev`, `total`, `used` (bytes), `read_bps`, `write_bps`, `busy_pct` |
+| `nets` | list: `name`, `rx_bps`, `tx_bps`, `addrs` |
 | `battery` | `pct`, `state`, `power_w`, `minutes_left`; `null` when there is no battery |
 | `host` | `uptime_s`, `threads` |
 | `procs` | list: `pid`, `ppid`, `uid`, `threads`, `name`, `state`, `cpu_pct`, `gpu_pct`, `mem`, `rss`, `started_s`, `vram`, `read_bps`, `write_bps` |
@@ -78,29 +121,58 @@ is resident minus shared.
 
 ## How light
 
-Measured on Linux, on a 12-thread desktop with about 530 processes running. Each program ran by itself for 60 seconds, one after the other.
+Measured on Linux, on a machine with 12 threads and 524 processes running. Each monitor ran alone, after the one before
+it had ended, for 50 seconds of reading, with a reading every second. CPU is the ticks of the
+process and its live children from `/proc`; memory is its peak resident size; the program size
+is the file that runs.
 
-| Program | CPU time in 60 s | Peak resident memory | Program file |
-|---|---|---|---|
-| `aether --json` | 0.43 s (about 0.7% of one core) | 3,468 kB | 615,520 bytes |
-| btop 1.4.7, `--update 1000`, in a pseudo-terminal | 0.82 s (about 1.4% of one core) | 25,236 kB | 1,653,176 bytes |
+Each monitor runs in a pseudo-terminal of 50 rows by 160 columns, except the JSON reading, which
+has no terminal. It is left 2 seconds to settle, then read from `/proc`.
 
-Method: CPU time is `utime + stime` from `/proc/PID/stat`, read at the end of the minute; peak
-memory is `VmHWM` from `/proc/PID/status`. btop ran under a small pseudo-terminal of 50 by 160
-characters, so no window opened.
+| Monitor | Version | CPU seconds | % of one core | Peak memory (MB) | Read calls per reading | Program (kB) |
+|---|---|---:|---:|---:|---:|---:|
+| aether | aether 0.1.0 | 0.29 | 0.58 | 3.9 | 302.9 | 763 |
+| aether --json | aether 0.1.0 | 0.30 | 0.60 | 3.6 | 298.8 | 763 |
+| top | top from procps-ng 4.0.6 | 0.94 | 1.88 | 21.5 | 1051.2 | 142 |
+| btop | btop version: 1.4.7 | 0.79 | 1.58 | 24.6 | 601.2 | 1614 |
+| bottom | bottom 0.14.9 | 2.91 | 5.82 | 8.0 | 2911.9 | 4988 |
+| glances | Glances version:	4.5.8 | 6.91 | 13.81 | 59.3 | 4560.2 |  |
+| gotop | gotop v4.2.0 (20220929T182223) | 1.71 | 3.42 | 22.8 | 2472.4 | 7552 |
+| zenith | zenith 0.15.1 | 7.35 | 14.69 | 40.8 | 22001.3 | 2267 |
 
-How it reads: files are opened once and re-read in place, and each process keeps its files open
-while it lives. A process that used the CPU is read on every tick; a sleeping one is read on a
-third of the ticks, so an idle process's numbers can be up to three ticks old. A process that
-starts and ends between two ticks counts in the CPU total but not in the table.
+Not in the table, because they are not installed on the machine: htop, atop.
+
+Run `python3 bench/weigh.py` to measure on your own machine. It needs only the standard library,
+and it reads `/proc`, so it does nothing on other systems.
+
+A figure is as fresh as its source: a busy process is read on every reading and a sleeping one on
+every third, so an idle process's numbers can be up to three readings old; a busy process's shared
+memory is up to three looks old and its disk rates average over the last two looks; a kernel
+thread shows no disk rate.
+
+## Next to btop
+
+| | aether | btop |
+|---|---|---|
+| CPU, memory and file size | Measured in the table above, lighter than btop | Measured in the table above |
+| GPU use, VRAM and disk rate per process, in the list | yes | not in the list |
+| JSON output | yes | — |
+| One file of default arguments | yes | — |
+| Mouse | not yet | yes |
+| Themes and layout presets | not yet | yes |
+| Graphs per core and per process | not yet | yes |
+| NVIDIA and Intel GPUs | not yet | yes |
+| macOS and the BSDs | not yet (see Status) | yes |
+
+Both have: a tree, a filter, sort keys, signals, disks, network, sensors and battery.
 
 ## Status
 
 | System | Status |
 |---|---|
 | Linux | Built and run. AMD GPUs are read. NVIDIA and Intel GPUs are not yet. |
-| Windows | Compiles (checked, not run). Every source says "not built for this OS yet". |
-| macOS | Compiles (checked, not run). Every source says "not built for this OS yet". |
+| Windows | Compiles (checked with `cargo check`, not run). Every source says "not built for this OS yet", and the view falls back to plain. |
+| macOS | Compiles (checked with `cargo check`, not run). Every source says "not built for this OS yet", and the view falls back to plain. |
 
 ## Licence
 
