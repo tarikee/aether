@@ -1,0 +1,6 @@
+# Invented device names for the fixture tree.
+1002  Example Graphics Vendor
+	73bf  Example GPU 73bf
+		1043 0001  Example subsystem
+8086  Example Other Vendor
+	1234  Other Device

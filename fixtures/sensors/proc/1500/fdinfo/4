@@ -1,0 +1,5 @@
+pos:	0
+drm-driver:	amdgpu
+drm-client-id:	77
+drm-engine-gfx:	2000000 ns
+drm-memory-vram:	4096 KiB
