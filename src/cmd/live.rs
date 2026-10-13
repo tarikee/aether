@@ -61,7 +61,7 @@ pub fn run(parsed: &Parsed) -> ExitCode {
     }
     let mut out = io::stdout().lock();
     let result = frames(
-        |r| sources.fill(r, started),
+        |r| sources.fill(r, started, &parsed.view),
         &mut out,
         parsed,
         mode,
@@ -188,17 +188,36 @@ impl Sources {
     }
 
     /// Fills `r` from one read of every source. The buffers of `r` are reused.
-    fn fill(&mut self, r: &mut Reading, started: Instant) {
+    /// Only the parts `--only` names are read: a part that is not shown costs nothing.
+    fn fill(&mut self, r: &mut Reading, started: Instant, view: &View) {
         r.t = started.elapsed().as_secs_f64();
-        r.cpu.clone_from(self.cpu.read());
-        r.mem.clone_from(self.mem.read());
-        fill_vec(&mut r.gpus, self.gpus.read());
-        fill_vec(&mut r.sensors, self.sensors.read());
-        fill_vec(&mut r.disks, self.disks.read());
-        fill_vec(&mut r.nets, self.nets.read());
-        r.battery = self.battery.read().cloned();
-        r.host.clone_from(self.host.read());
-        fill_vec(&mut r.procs, self.procs.read());
+        if view.shows("cpu") {
+            r.cpu.clone_from(self.cpu.read());
+        }
+        if view.shows("mem") {
+            r.mem.clone_from(self.mem.read());
+        }
+        if view.shows("gpu") {
+            fill_vec(&mut r.gpus, self.gpus.read());
+        }
+        if view.shows("sensors") {
+            fill_vec(&mut r.sensors, self.sensors.read());
+        }
+        if view.shows("disk") {
+            fill_vec(&mut r.disks, self.disks.read());
+        }
+        if view.shows("net") {
+            fill_vec(&mut r.nets, self.nets.read());
+        }
+        if view.shows("battery") {
+            r.battery = self.battery.read().cloned();
+        }
+        if view.shows("host") {
+            r.host.clone_from(self.host.read());
+        }
+        if view.shows("procs") {
+            fill_vec(&mut r.procs, self.procs.read());
+        }
     }
 }
 
