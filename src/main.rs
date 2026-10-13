@@ -18,10 +18,21 @@ const COMMANDS: &[(&str, Run)] = &[
     ("proc", cmd::proc::run),
     ("kill", cmd::kill::run),
     ("check", cmd::check::run),
+    ("version", cli::version),
     ("help", cli::help),
 ];
 
+/// Raises the open-file limit once, before any source opens its files.
+#[cfg(target_os = "linux")]
+fn raise_limits() {
+    aether::sys::linux::calls::raise_files();
+}
+
+#[cfg(not(target_os = "linux"))]
+fn raise_limits() {}
+
 fn main() -> ExitCode {
+    raise_limits();
     let args: Vec<String> = std::env::args_os()
         .skip(1)
         .map(|a| a.to_string_lossy().into_owned())

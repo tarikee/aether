@@ -24,20 +24,33 @@ impl PFile {
 
     /// The file's current contents, up to the buffer's size. A failed read is empty.
     pub fn read(&mut self) -> &[u8] {
-        let mut filled = 0;
-        while filled < self.buf.len() {
-            match self.file.read_at(&mut self.buf[filled..], filled as u64) {
-                Ok(0) => break,
-                Ok(n) => filled += n,
-                Err(e) if e.kind() == ErrorKind::Interrupted => continue,
-                Err(_) => {
-                    filled = 0;
+        read_into(&self.file, &mut self.buf)
+    }
+}
+
+/// Reads an open file in place from offset 0 into `buf` and returns what it held (at most the
+/// size of `buf`). A failed read is empty. A short read ends the file: the kernel's files give
+/// their whole text in one read, so no second call is made just to find the end.
+pub fn read_into<'a>(file: &File, buf: &'a mut [u8]) -> &'a [u8] {
+    let mut filled = 0;
+    while filled < buf.len() {
+        let want = buf.len() - filled;
+        match file.read_at(&mut buf[filled..], filled as u64) {
+            Ok(0) => break,
+            Ok(n) => {
+                filled += n;
+                if n < want {
                     break;
                 }
             }
+            Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+            Err(_) => {
+                filled = 0;
+                break;
+            }
         }
-        &self.buf[..filled]
     }
+    &buf[..filled]
 }
 
 /// The non-empty lines of a buffer.

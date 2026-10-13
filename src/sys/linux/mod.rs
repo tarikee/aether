@@ -2,7 +2,7 @@
 //! `calls.rs` only.
 
 pub mod battery;
-mod calls;
+pub mod calls;
 pub mod cpu;
 pub mod disk;
 pub mod gpu;
@@ -26,17 +26,17 @@ pub use sensors::Sensors;
 
 use super::Built;
 
-/// Every source and whether it is built. A source's package flips its own entry to `Yes`.
+/// Every source and whether it is built. A source's module flips its own entry to `Yes`.
 pub fn sources() -> &'static [(&'static str, Built)] {
     &[
-        ("cpu", Built::NotYet),
-        ("memory", Built::NotYet),
-        ("host", Built::NotYet),
-        ("gpu", Built::NotYet),
-        ("sensors", Built::NotYet),
-        ("disks", Built::NotYet),
-        ("network", Built::NotYet),
-        ("battery", Built::NotYet),
-        ("processes", Built::NotYet),
+        ("cpu", Built::Yes),
+        ("memory", Built::Yes),
+        ("host", Built::Yes),
+        ("gpu", Built::Yes),
+        ("sensors", Built::Yes),
+        ("disks", Built::Yes),
+        ("network", Built::Yes),
+        ("battery", Built::Yes),
+        ("processes", Built::Yes),
     ]
 }

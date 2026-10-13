@@ -22,6 +22,16 @@ pub struct View {
     pub only: Option<Vec<String>>,
 }
 
+impl View {
+    /// Whether `--only` names this part (no `--only` shows everything).
+    pub fn shows(&self, part: &str) -> bool {
+        match &self.only {
+            None => true,
+            Some(list) => list.iter().any(|p| p == part),
+        }
+    }
+}
+
 /// The parsed command line.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Parsed {
@@ -33,6 +43,8 @@ pub struct Parsed {
     pub json: bool,
     /// Seconds between live readings.
     pub interval_s: f64,
+    /// Whether `-i` was given: `--once` then waits that long between its two readings.
+    pub interval_given: bool,
     pub force: bool,
     pub yes: bool,
     pub view: View,
@@ -54,6 +66,8 @@ Usage:
       --force kills it. By NAME it lists the matches and asks first; -y skips the question.
   aether check
       what this machine and OS offer, and what is missing
+  aether version
+      the version (also --version and -V)
   aether help
 
 Options:
@@ -64,6 +78,12 @@ Options:
   --only LIST            only these parts, e.g. cpu,mem (default: everything)
   --json                 one JSON object per reading; a missing reading is null
 ";
+
+/// `aether version`: prints the program's version.
+pub fn version(_parsed: &Parsed) -> ExitCode {
+    let _ = writeln!(std::io::stdout(), "aether {}", env!("CARGO_PKG_VERSION"));
+    ExitCode::SUCCESS
+}
 
 /// `aether help`: prints the grammar.
 pub fn help(_parsed: &Parsed) -> ExitCode {
@@ -86,6 +106,7 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
         once: false,
         json: false,
         interval_s: 1.0,
+        interval_given: false,
         force: false,
         yes: false,
         view: View {
@@ -101,6 +122,7 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
         let a = arg.as_str();
         match a {
             "-h" | "--help" => p.command = "help",
+            "-V" | "--version" => p.command = "version",
             "--once" => p.once = true,
             "--json" => p.json = true,
             "--flat" => p.view.flat = true,
@@ -109,6 +131,7 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
             "-y" | "--yes" => p.yes = true,
             "-i" | "--interval" => {
                 let v = value(&mut it, a)?;
+                p.interval_given = true;
                 p.interval_s = v
                     .parse::<f64>()
                     .ok()
@@ -132,12 +155,13 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
             _ => words.push(a),
         }
     }
-    if p.command == "help" {
+    if p.command == "help" || p.command == "version" {
         return Ok(p);
     }
     match words.as_slice() {
         [] => {}
         ["help"] => p.command = "help",
+        ["version"] => p.command = "version",
         ["check"] => p.command = "check",
         ["proc", t] => {
             p.command = "proc";

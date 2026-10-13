@@ -1,5 +1,5 @@
 //! The same names as the Linux folder, with empty readings. Used on the OSes whose source is
-//! not built yet; each source's entry in `sources()` stays `NotYet` until its stage lands.
+//! not built yet; each source's entry in `sources()` stays `NotYet` until its OS support lands.
 
 use super::{
     BatterySample, Built, CpuSample, DiskSample, EndError, GpuSample, HostSample, MemSample,
