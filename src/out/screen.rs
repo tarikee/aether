@@ -684,13 +684,21 @@ fn disk_block(disks: &[DiskSample], v: &View, cap: usize, colour: bool) -> Vec<L
     if shown.is_empty() {
         return Vec::new();
     }
+    // The mount column is as wide as the longest mount shown: 5 at least, 14 at most.
+    let mw = shown
+        .iter()
+        .take(DISKS_MAX)
+        .map(|d| d.mount.chars().count())
+        .max()
+        .unwrap_or(0)
+        .clamp(5, 14);
     let mut out = vec![rule(cap, colour, "Disks", "", "")];
     for d in shown.iter().take(DISKS_MAX) {
         let mut l = Line::body(cap, colour);
-        let mount = cut(&d.mount, 14);
+        let mount = cut(&d.mount, mw);
         let w = mount.chars().count();
         l.plain(&mount);
-        l.gap(14 - w + 2);
+        l.gap(mw - w + 2);
         size_pair(&mut l, d.used, d.total, "");
         if let Some(b) = d.busy_pct {
             l.sep();
@@ -824,14 +832,17 @@ fn sensor_block(sensors: &[Sensor], max_lines: usize, cap: usize, colour: bool) 
         .max()
         .unwrap_or(0)
         .min(cap);
-    let per_row = ((cap + 2) / (width + 2)).max(1);
+    let per_row = ((cap.saturating_sub(INDENT) + 2) / (width + 2)).max(1);
     let lines = cells.len().div_ceil(per_row).min(max_lines);
     for row in 0..lines {
         let mut l = Line::body(cap, colour);
         for (j, (name, value, role)) in cells.iter().skip(row * per_row).take(per_row).enumerate() {
-            if j > 0 {
-                l.gap(2);
+            // A pair that does not fit whole is left out, never cut.
+            let sep = if j > 0 { 2 } else { 0 };
+            if l.width + sep + width > cap {
+                break;
             }
+            l.gap(sep);
             let start = l.width;
             l.plain(name);
             let used = value.chars().count();
@@ -1050,8 +1061,22 @@ impl Columns {
 
 /// A size or rate as text, for a table cell: `2.3 GiB`, `0 B`, `3.2 MiB/s`.
 fn size_text(n: u64, suffix: &str) -> String {
-    let (num, unit) = size_parts(n);
-    format!("{num} {unit}{suffix}")
+    if n < 1024 {
+        return format!("{n} B{suffix}");
+    }
+    let mut v = n as f64;
+    let mut i = 0;
+    while v >= 1024.0 && i < UNITS.len() - 1 {
+        v /= 1024.0;
+        i += 1;
+    }
+    // One decimal under 10 (3.0 GiB beside 3.4 GiB), whole from 10 (12 GiB, 400 MiB).
+    let num = if v < 9.95 {
+        format!("{v:.1}")
+    } else {
+        format!("{v:.0}")
+    };
+    format!("{num} {}{suffix}", UNITS[i])
 }
 
 /// One table cell: the text cut to its width, right-aligned, then two spaces.
@@ -1392,22 +1417,48 @@ mod tests {
             return;
         };
         let dir = std::path::PathBuf::from(dir);
-        let apps = [
-            "browser", "editor", "terminal", "music", "mail", "sync", "shell", "game", "chat",
-            "files", "notes", "monitor",
+        let mb = |m: u64| m * 1024 * 1024;
+        // Invented, and believable: the rows add up to most of the machine's 23 %, the GPU rows to
+        // its 41 %, the VRAM rows to its 2.1 GiB, and the history has the shape of ordinary use.
+        // Name, pid, CPU %, memory in MiB, GPU %, VRAM in MiB, bytes written a second.
+        type Row = (
+            &'static str,
+            u32,
+            f32,
+            u64,
+            Option<f32>,
+            Option<u64>,
+            Option<u64>,
+        );
+        let spec: &[Row] = &[
+            ("game", 301, 6.2, 1600, Some(20.0), Some(1000), None),
+            ("game", 302, 2.1, 500, Some(8.0), Some(300), None),
+            ("game", 303, 0.8, 255, Some(3.0), Some(134), None),
+            ("browser", 410, 2.6, 2100, Some(6.0), Some(307), None),
+            ("browser", 411, 1.4, 1000, None, None, None),
+            ("editor", 330, 2.3, 410, None, None, None),
+            ("sync", 610, 1.2, 96, None, None, Some(1_048_576)),
+            ("chat", 520, 0.9, 900, None, None, None),
+            ("terminal", 700, 0.7, 60, None, None, None),
+            ("terminal", 701, 0.4, 80, None, None, None),
+            ("music", 800, 1.0, 210, None, None, None),
+            ("files", 950, 0.5, 64, None, None, None),
+            ("mail", 900, 0.4, 180, None, None, None),
+            ("notes", 960, 0.4, 38, None, None, None),
+            ("shell", 970, 0.1, 12, None, None, None),
         ];
         let mut procs = Vec::new();
-        for i in 0..25_u32 {
-            let name = apps[(i as usize * 7) % apps.len()];
-            let cpu = f32::from(u16::try_from(i * 37 % 90).unwrap()) / 3.0;
-            procs.push(proc(
-                100 + i,
-                name,
-                cpu,
-                u64::from(i + 1) * 90 * 1024 * 1024,
-            ));
+        for &(name, pid, cpu, mem, gpu, vram, write) in spec {
+            let mut p = proc(pid, name, cpu, mb(mem));
+            p.gpu_pct = gpu;
+            p.vram = vram.map(mb);
+            p.write_bps = write;
+            procs.push(p);
         }
         let mut r = sample(12, procs);
+        r.cpu.threads = vec![
+            41.0, 18.0, 9.0, 33.0, 4.0, 27.0, 12.0, 6.0, 52.0, 3.0, 38.0, 33.0,
+        ];
         r.mem.swap_total = 8 * 1024 * 1024 * 1024;
         r.mem.swap_used = 200 * 1024 * 1024;
         r.gpus.push(GpuSample {
@@ -1441,24 +1492,32 @@ mod tests {
             total: 1_980_000_000_000,
             used: 1_200_000_000_000,
             read_bps: Some(0),
-            write_bps: Some(12 * 1024 * 1024),
+            write_bps: Some(mb(12)),
             busy_pct: Some(34.0),
         });
-        r.nets.push(NetSample {
-            name: "wlan0".to_string(),
-            rx_bps: Some(0),
-            tx_bps: Some(0),
-            addrs: Vec::new(),
-        });
+        // Ordinary use: quiet most of the time, a few bursts, a settle, and now.
+        let cpu_hist = [
+            14.0, 16.0, 12.0, 18.0, 22.0, 35.0, 48.0, 41.0, 30.0, 19.0, 15.0, 13.0, 17.0, 21.0,
+            26.0, 58.0, 64.0, 44.0, 31.0, 22.0, 18.0, 15.0, 14.0, 19.0, 27.0, 33.0, 25.0, 21.0,
+            17.0, 16.0, 20.0, 24.0, 38.0, 52.0, 47.0, 29.0, 21.0, 18.0, 15.0, 13.0, 12.0, 16.0,
+            19.0, 23.0, 28.0, 42.0, 36.0, 24.0, 20.0, 17.0, 15.0, 14.0, 18.0, 22.0, 26.0, 21.0,
+            19.0, 23.0, 27.0, 31.0, 24.0,
+        ];
         let mut hist = History::default();
-        for i in 0..60_u64 {
-            r.cpu.pct = Some((i * 13 % 100) as f32);
-            r.nets[0].rx_bps = Some(i * 50_000 % 4_000_000);
+        for (i, &c) in cpu_hist.iter().enumerate() {
+            r.cpu.pct = Some(c);
+            r.nets[0].rx_bps = Some((i as u64 * 7_919 + 13) % 97 * 40_000);
             hist.push(&r);
         }
-        let users: HashMap<u32, String> = [(1000, "dana".to_string()), (0, "root".to_string())]
-            .into_iter()
-            .collect();
+        r.cpu.pct = Some(23.4);
+        r.nets[0].rx_bps = Some(2_900_000);
+        r.nets[0].tx_bps = Some(117_000);
+        hist.push(&r);
+        let users = Rc::new(
+            [(1000, "dana".to_string()), (0, "root".to_string())]
+                .into_iter()
+                .collect::<HashMap<u32, String>>(),
+        );
         let mut s = Screen {
             cols: 120,
             rows: 36,
@@ -1470,7 +1529,7 @@ mod tests {
             overlay: Overlay::Table,
             keys: true,
             prompt: None,
-            users: Rc::new(users),
+            users: Rc::clone(&users),
         };
         let text = render_text(&r, &hist, &mut s);
         std::fs::write(
@@ -1481,5 +1540,13 @@ mod tests {
         s.colour = true;
         let ansi = render_text(&r, &hist, &mut s).replace("\x1b[H", "");
         std::fs::write(dir.join("aether-view-frame.ansi"), ansi).unwrap();
+        // The frame for the picture: 100 by 30, colour on.
+        let mut small = Screen {
+            cols: 100,
+            rows: 30,
+            ..s.clone()
+        };
+        let small_ansi = render_text(&r, &hist, &mut small).replace("\x1b[H", "");
+        std::fs::write(dir.join("aether-view-100x30.ansi"), small_ansi).unwrap();
     }
 }
