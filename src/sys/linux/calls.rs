@@ -3,6 +3,7 @@
 #![allow(unsafe_code)]
 
 use std::ffi::CStr;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Total and used bytes of the file system at `path`, by `statvfs`: total = blocks x frsize,
 /// used = (blocks - free blocks) x frsize. `None` if the call fails.
@@ -89,8 +90,8 @@ pub fn raise_files() {
     }
 }
 
-/// The rows of the terminal on standard output, if it is one.
-pub fn term_rows() -> Option<u16> {
+/// The rows and columns of the terminal on standard output, if it is one.
+pub fn term_size() -> Option<(u16, u16)> {
     let mut ws = libc::winsize {
         ws_row: 0,
         ws_col: 0,
@@ -99,7 +100,28 @@ pub fn term_rows() -> Option<u16> {
     };
     // SAFETY: `TIOCGWINSZ` writes one winsize struct, which we pass.
     let ok = unsafe { libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut ws) } == 0;
-    (ok && ws.ws_row > 0).then_some(ws.ws_row)
+    (ok && ws.ws_row > 0 && ws.ws_col > 0).then_some((ws.ws_row, ws.ws_col))
+}
+
+/// Set by SIGINT, SIGTERM and SIGHUP once `catch_stops` has run.
+static STOP: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn on_stop(_sig: libc::c_int) {
+    STOP.store(true, Ordering::SeqCst);
+}
+
+/// Makes SIGINT, SIGTERM and SIGHUP set the stop flag, so the caller can put the terminal back
+/// before it ends.
+pub fn catch_stops() {
+    for sig in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+        // SAFETY: the handler only stores to an atomic, which is allowed in a signal handler.
+        unsafe { libc::signal(sig, on_stop as *const () as libc::sighandler_t) };
+    }
+}
+
+/// Whether a stop signal has come since `catch_stops`.
+pub fn stop_requested() -> bool {
+    STOP.load(Ordering::SeqCst)
 }
 
 /// Every interface's addresses as (interface, address). Link-local IPv6 is left out.

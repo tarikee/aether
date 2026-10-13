@@ -1,7 +1,7 @@
 //! The text view for people: one reading, sorted and grouped as the view asks.
 
 use crate::cli::{compare, Keys, Sort, View};
-use crate::out::tree;
+use crate::out::tree::Tree;
 use aether::sys::{
     BatterySample, CpuSample, DiskSample, GpuSample, HostSample, MemSample, NetSample, Proc,
     Sensor, SensorKind,
@@ -21,6 +21,7 @@ pub fn write(
     view: &View,
     out: &mut Vec<u8>,
     screen: Option<usize>,
+    tree: &mut Tree,
     rank: &dyn Fn(&Proc) -> f64,
 ) {
     let start = out.len();
@@ -51,7 +52,7 @@ pub fn write(
     if shown(view, "procs") {
         let above = out[start..].iter().filter(|b| **b == b'\n').count();
         let room = screen.map(|rows| rows.saturating_sub(above + TABLE_LINES));
-        procs(out, &reading.procs, view, room, rank);
+        procs(out, &reading.procs, view, room, tree, rank);
     }
 }
 
@@ -218,22 +219,22 @@ fn battery(out: &mut Vec<u8>, b: Option<&BatterySample>) {
 }
 
 /// One row of the process table, before its cells are made.
-struct Row {
-    pid: Option<u32>,
-    uid: u32,
+pub(crate) struct Row {
+    pub(crate) pid: Option<u32>,
+    pub(crate) uid: u32,
     /// The newest start time of the processes in the row.
-    started: u64,
+    pub(crate) started: u64,
     /// The number the numeric keys sort by: the sum for a group, missing (-1) only when all are.
-    rank: f64,
-    name: String,
-    count: u32,
-    threads: u32,
-    cpu: Option<f32>,
-    mem: u64,
-    gpu: Option<f32>,
-    vram: Option<u64>,
-    read: Option<u64>,
-    write: Option<u64>,
+    pub(crate) rank: f64,
+    pub(crate) name: String,
+    pub(crate) count: u32,
+    pub(crate) threads: u32,
+    pub(crate) cpu: Option<f32>,
+    pub(crate) mem: u64,
+    pub(crate) gpu: Option<f32>,
+    pub(crate) vram: Option<u64>,
+    pub(crate) read: Option<u64>,
+    pub(crate) write: Option<u64>,
 }
 
 impl Row {
@@ -296,9 +297,9 @@ fn add<T: std::ops::Add<Output = T> + Copy>(a: Option<T>, b: Option<T>) -> Optio
     }
 }
 
-/// The key's name, as the header says it.
-fn sort_name(view: &View) -> String {
-    let name = match view.by {
+/// The key's name, as the header and the full-screen rule say it.
+pub(crate) fn sort_word(by: Sort) -> &'static str {
+    match by {
         Sort::Cpu => "cpu",
         Sort::Mem => "memory",
         Sort::Gpu => "gpu",
@@ -308,7 +309,11 @@ fn sort_name(view: &View) -> String {
         Sort::Threads => "threads",
         Sort::Name => "name",
         Sort::Age => "age",
-    };
+    }
+}
+
+fn sort_name(view: &View) -> String {
+    let name = sort_word(view.by);
     match (view.reverse, view.steady && view.by.smooths()) {
         (false, false) => name.to_string(),
         (true, false) => format!("{name}, reversed"),
@@ -330,13 +335,14 @@ fn group(mut rows: Vec<Row>) -> Vec<Row> {
     out
 }
 
-fn procs(
-    out: &mut Vec<u8>,
+/// The rows of the process table in the order the view asks for, and the tree's marks (one
+/// per row, only under `--tree`). Grouped by app unless `--flat` or `--tree`.
+pub(crate) fn process_rows(
     procs: &[Proc],
     view: &View,
-    room: Option<usize>,
     rank: &dyn Fn(&Proc) -> f64,
-) {
+    tree: &mut Tree,
+) -> (Vec<Row>, Vec<String>) {
     let grouped = !view.flat && !view.tree;
     let mut rows: Vec<Row> = procs.iter().map(|p| Row::of(p, rank(p))).collect();
     if grouped {
@@ -345,7 +351,6 @@ fn procs(
     // A tree is single processes, so rows[i] is procs[i] here and the tree can order by index.
     let mut marks: Vec<String> = Vec::new();
     if view.tree {
-        let mut tree = tree::shared();
         tree.build(procs, |a, b| {
             compare(view, &rows[a].keys(), &rows[b].keys())
         });
@@ -362,6 +367,19 @@ fn procs(
     } else {
         rows.sort_by(|a, b| compare(view, &a.keys(), &b.keys()));
     }
+    (rows, marks)
+}
+
+fn procs(
+    out: &mut Vec<u8>,
+    procs: &[Proc],
+    view: &View,
+    room: Option<usize>,
+    tree: &mut Tree,
+    rank: &dyn Fn(&Proc) -> f64,
+) {
+    let grouped = !view.flat && !view.tree;
+    let (mut rows, mut marks) = process_rows(procs, view, rank, tree);
     let total = rows.len();
     if let Some(room) = room {
         rows.truncate(room);
@@ -492,7 +510,7 @@ fn opt_bytes(v: Option<u64>) -> String {
     v.map_or_else(|| "-".to_string(), bytes)
 }
 
-fn rate(v: Option<u64>) -> String {
+pub(crate) fn rate(v: Option<u64>) -> String {
     match v {
         Some(b) => format!("{}/s", bytes(b)),
         None => "-".to_string(),
@@ -500,7 +518,7 @@ fn rate(v: Option<u64>) -> String {
 }
 
 /// A byte count for people: "512 B", "1.5 KiB", "31.3 GiB".
-fn bytes(n: u64) -> String {
+pub(crate) fn bytes(n: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
     if n < 1024 {
         return format!("{n} B");
@@ -515,7 +533,7 @@ fn bytes(n: u64) -> String {
 }
 
 /// Seconds as "3d 04h 12m", "1h 01m" or "12m 34s".
-fn uptime(s: u64) -> String {
+pub(crate) fn uptime(s: u64) -> String {
     let d = s / 86_400;
     let h = (s % 86_400) / 3_600;
     let m = (s % 3_600) / 60;
@@ -574,7 +592,7 @@ mod tests {
             Sort::Mem => p.mem as f64,
             _ => f64::from(p.cpu_pct.unwrap_or(-1.0)),
         };
-        write(r, v, &mut out, None, &rank);
+        write(r, v, &mut out, None, &mut Tree::new(), &rank);
         String::from_utf8(out).unwrap_or_default()
     }
 

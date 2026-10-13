@@ -1,6 +1,11 @@
-//! `aether` (live, or once with `--once`): the readings, written out.
+//! `aether` (live, or once with `--once`): the readings, written out. Live on a terminal that
+//! can show it, the full-screen view; otherwise the plain text view. `--json` and `--once` never
+//! take the screen.
 
 use crate::cli::{compare, Keys, Parsed, Sort, View};
+use crate::out::history::History;
+use crate::out::screen::{self, Screen};
+use crate::out::tree::Tree;
 use crate::out::{json, text};
 use aether::sys::{
     command_line, Battery, Cpu, Disks, Gpus, Host, Mem, Nets, Proc, Procs, Root, Sensors,
@@ -11,22 +16,29 @@ use std::io::{self, IsTerminal, Write};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-/// The rows of the terminal on standard output, if there is one.
-#[cfg(target_os = "linux")]
-fn screen_rows() -> Option<usize> {
-    aether::sys::linux::calls::term_rows().map(usize::from)
-}
-
-#[cfg(not(target_os = "linux"))]
-fn screen_rows() -> Option<usize> {
-    None
-}
-
 /// Moves the cursor home and clears to the end of the screen: one frame replaces the last.
 const CLEAR: &[u8] = b"\x1b[H\x1b[J";
 
 /// The wait between the two readings of `--once`, so its rates are numbers.
 const ONCE_WAIT: Duration = Duration::from_millis(250);
+
+/// The alternate screen, with the cursor hidden: entering the full-screen view.
+const ENTER: &[u8] = b"\x1b[?1049h\x1b[?25l";
+
+/// What the terminal had: colours reset, the alternate screen left, the cursor shown.
+const LEAVE: &[u8] = b"\x1b[0m\x1b[?1049l\x1b[?25h";
+
+/// The rows and columns a terminal needs for the full-screen view; a smaller one gets plain text.
+const SCREEN_MIN: (usize, usize) = (15, 60);
+
+/// How the frames are written: to a terminal or not, in the full-screen view or the plain one,
+/// and with colour codes or without.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Mode {
+    pub tty: bool,
+    pub screen: bool,
+    pub colour: bool,
+}
 
 /// Runs the live view, or one reading with `--once`.
 pub fn run(parsed: &Parsed) -> ExitCode {
@@ -34,15 +46,105 @@ pub fn run(parsed: &Parsed) -> ExitCode {
     let root = Root::system();
     let started = Instant::now();
     let mut sources = Sources::open(&root);
+    let live = !parsed.once;
+    let fits =
+        screen_size().is_some_and(|(rows, cols)| rows >= SCREEN_MIN.0 && cols >= SCREEN_MIN.1);
+    let full =
+        tty && live && !parsed.json && !parsed.plain && utf8_locale() && term_not_dumb() && fits;
+    let mode = Mode {
+        tty,
+        screen: full,
+        colour: screen_colour(parsed),
+    };
+    if full {
+        catch_stops();
+    }
     let mut out = io::stdout().lock();
     let result = frames(
         |r| sources.fill(r, started),
         &mut out,
         parsed,
-        tty,
-        std::thread::sleep,
+        mode,
+        wait,
+        screen_size,
+        stop_requested,
     );
+    // A full-screen write that fails means the terminal has gone: there is no one left to tell.
+    let result = if full { result.or(Ok(())) } else { result };
     finish(result)
+}
+
+/// Colour codes unless `--no-color` or `NO_COLOR` is set.
+fn screen_colour(parsed: &Parsed) -> bool {
+    !parsed.no_color && std::env::var_os("NO_COLOR").is_none()
+}
+
+/// The first of LC_ALL, LC_CTYPE and LANG that is set names UTF-8.
+fn utf8_locale() -> bool {
+    ["LC_ALL", "LC_CTYPE", "LANG"]
+        .iter()
+        .find_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty()))
+        .is_some_and(|v| {
+            let v = v.to_ascii_lowercase();
+            v.contains("utf-8") || v.contains("utf8")
+        })
+}
+
+fn term_not_dumb() -> bool {
+    !matches!(std::env::var("TERM"), Ok(t) if t == "dumb")
+}
+
+/// The terminal's (rows, columns) on standard output, where the OS has that built.
+#[cfg(target_os = "linux")]
+fn screen_size() -> Option<(usize, usize)> {
+    aether::sys::linux::calls::term_size()
+        .map(|(rows, cols)| (usize::from(rows), usize::from(cols)))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn screen_size() -> Option<(usize, usize)> {
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn catch_stops() {
+    aether::sys::linux::calls::catch_stops();
+}
+
+#[cfg(not(target_os = "linux"))]
+fn catch_stops() {}
+
+#[cfg(target_os = "linux")]
+fn stop_requested() -> bool {
+    aether::sys::linux::calls::stop_requested()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn stop_requested() -> bool {
+    false
+}
+
+/// Sleeps for `d` in slices of 50 ms, and returns early when a stop has come.
+fn wait(d: Duration) {
+    let slice = Duration::from_millis(50);
+    let mut left = d;
+    while !stop_requested() && !left.is_zero() {
+        let step = left.min(slice);
+        std::thread::sleep(step);
+        left -= step;
+    }
+}
+
+/// Enters the full-screen view: the alternate screen, the cursor hidden.
+fn enter(out: &mut dyn Write) -> io::Result<()> {
+    out.write_all(ENTER)?;
+    out.flush()
+}
+
+/// Leaves it: the terminal is put back as it was.
+fn leave(out: &mut dyn Write) -> io::Result<()> {
+    out.write_all(LEAVE)?;
+    out.flush()
 }
 
 /// The exit code for the end of a run. A closed pipe (`aether --json | head`) is a normal end.
@@ -200,15 +302,38 @@ impl Steady {
     }
 }
 
-/// Writes the readings: one when `--once`, else one a tick until the output fails.
-/// `read` fills a reading; `pause` waits. Every run reads once before its first frame, so
-/// the rates have two readings to work from.
+/// Writes the readings: one when `--once`, else one a tick until the output fails or a stop
+/// comes. The full-screen view is entered before the first frame and left after the last, however
+/// the run ends. `read` fills a reading, `pause` waits, `size` gives the terminal's (rows, columns)
+/// and `stop` says a stop has come. Every run reads once before its first frame, so the rates have
+/// two readings to work from.
 fn frames(
     mut read: impl FnMut(&mut Reading),
     out: &mut dyn Write,
     parsed: &Parsed,
-    tty: bool,
+    mode: Mode,
     mut pause: impl FnMut(Duration),
+    mut size: impl FnMut() -> Option<(usize, usize)>,
+    stop: impl Fn() -> bool,
+) -> io::Result<()> {
+    if !mode.screen {
+        return draw(&mut read, out, parsed, mode, &mut pause, &mut size, &stop);
+    }
+    enter(out)?;
+    let result = draw(&mut read, out, parsed, mode, &mut pause, &mut size, &stop);
+    // Whatever ended the run, the terminal is put back; a failed write here means it is gone.
+    let _ = leave(out);
+    result
+}
+
+fn draw(
+    read: &mut dyn FnMut(&mut Reading),
+    out: &mut dyn Write,
+    parsed: &Parsed,
+    mode: Mode,
+    pause: &mut dyn FnMut(Duration),
+    size: &mut dyn FnMut() -> Option<(usize, usize)>,
+    stop: &dyn Fn() -> bool,
 ) -> io::Result<()> {
     let live = !parsed.once;
     let interval = Duration::try_from_secs_f64(parsed.interval_s).unwrap_or(Duration::MAX);
@@ -218,6 +343,17 @@ fn frames(
     let mut commands = Commands::new();
     let mut steady = Steady::default();
     let mut tick = 0u64;
+    let mut tree = Tree::new();
+    let mut hist = History::default();
+    let (rows, cols) = size().unwrap_or((24, 80));
+    let mut state = Screen {
+        cols,
+        rows,
+        colour: mode.colour,
+        selected: Some(0),
+        scroll: 0,
+        interval_s: parsed.interval_s,
+    };
     // A first reading, then a wait, so the rates have two readings to work from.
     read(&mut reading);
     // `--once` waits as long as `-i` asked, or 250 ms when `-i` was not given.
@@ -228,6 +364,9 @@ fn frames(
     };
     pause(if live { interval } else { once_wait });
     loop {
+        if stop() {
+            return Ok(());
+        }
         let started = Instant::now();
         read(&mut reading);
         if let Some(needle) = parsed.view.filter.as_deref() {
@@ -245,18 +384,36 @@ fn frames(
         let rank = |p: &Proc| if smooth { steady.of(p) } else { key(p, by) };
         order(&mut reading.procs, &parsed.view, &rank);
         buf.clear();
-        if live && tty && !parsed.json {
-            buf.extend_from_slice(CLEAR);
-        }
-        if parsed.json {
-            json::write(&reading, &parsed.view, &mut buf);
+        if mode.screen {
+            if let Some((rows, cols)) = size() {
+                state.rows = rows;
+                state.cols = cols;
+            }
+            hist.push(&reading);
+            screen::render(
+                &mut buf,
+                &reading,
+                &parsed.view,
+                &state,
+                &hist,
+                &mut tree,
+                &rank,
+            );
         } else {
-            let screen = if tty && !parsed.view.all {
-                screen_rows()
+            if live && mode.tty && !parsed.json {
+                buf.extend_from_slice(CLEAR);
+            }
+            if parsed.json {
+                json::write(&reading, &parsed.view, &mut buf);
             } else {
-                None
-            };
-            text::write(&reading, &parsed.view, &mut buf, screen, &rank);
+                // A terminal is filled to its height, unless --all asks for every row.
+                let fit = if mode.tty && !parsed.view.all {
+                    size().map(|(rows, _)| rows)
+                } else {
+                    None
+                };
+                text::write(&reading, &parsed.view, &mut buf, fit, &mut tree, &rank);
+            }
         }
         out.write_all(&buf)?;
         out.flush()?;
@@ -272,6 +429,14 @@ fn frames(
 mod tests {
     use super::*;
     use crate::cli::parse;
+
+    fn mode(tty: bool) -> Mode {
+        Mode {
+            tty,
+            screen: false,
+            colour: false,
+        }
+    }
 
     fn args(line: &str) -> Vec<String> {
         line.split_whitespace().map(str::to_string).collect()
@@ -406,7 +571,15 @@ mod tests {
         let mut reads = 0;
         let mut pauses = Vec::new();
         let mut out = Limited::new(9, io::ErrorKind::Other);
-        let r = frames(|_| reads += 1, &mut out, &p, true, |d| pauses.push(d));
+        let r = frames(
+            |_| reads += 1,
+            &mut out,
+            &p,
+            mode(true),
+            |d| pauses.push(d),
+            || None,
+            || false,
+        );
         assert!(r.is_ok());
         // A first reading, the wait, then the reading that is printed.
         assert_eq!(reads, 2);
@@ -420,7 +593,15 @@ mod tests {
         let mut reads = 0;
         let mut pauses = Vec::new();
         let mut out = Limited::new(3, io::ErrorKind::Other);
-        let r = frames(|_| reads += 1, &mut out, &p, true, |d| pauses.push(d));
+        let r = frames(
+            |_| reads += 1,
+            &mut out,
+            &p,
+            mode(true),
+            |d| pauses.push(d),
+            || None,
+            || false,
+        );
         assert_eq!(r.unwrap_err().kind(), io::ErrorKind::Other);
         // One warm-up read, then four frames: the fourth fails at its flush.
         assert_eq!(reads, 5);
@@ -434,7 +615,7 @@ mod tests {
     fn live_into_a_pipe_has_no_clear_codes() {
         let p = parse(&args("")).unwrap();
         let mut out = Limited::new(2, io::ErrorKind::Other);
-        let _ = frames(|_| {}, &mut out, &p, false, |_| {});
+        let _ = frames(|_| {}, &mut out, &p, mode(false), |_| {}, || None, || false);
         assert_eq!(count(&out.out, CLEAR), 0);
         assert_eq!(out.flushes, 3);
     }
@@ -443,7 +624,7 @@ mod tests {
     fn json_is_never_cleared() {
         let p = parse(&args("--json")).unwrap();
         let mut out = Limited::new(1, io::ErrorKind::Other);
-        let _ = frames(|_| {}, &mut out, &p, true, |_| {});
+        let _ = frames(|_| {}, &mut out, &p, mode(true), |_| {}, || None, || false);
         assert_eq!(count(&out.out, CLEAR), 0);
     }
 
@@ -452,7 +633,15 @@ mod tests {
         let p = parse(&args("--json")).unwrap();
         let mut reads = 0;
         let mut out = Limited::new(0, io::ErrorKind::BrokenPipe);
-        let r = frames(|_| reads += 1, &mut out, &p, false, |_| {});
+        let r = frames(
+            |_| reads += 1,
+            &mut out,
+            &p,
+            mode(false),
+            |_| {},
+            || None,
+            || false,
+        );
         let e = r.unwrap_err();
         assert_eq!(e.kind(), io::ErrorKind::BrokenPipe);
         assert_eq!(reads, 2);

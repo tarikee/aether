@@ -119,6 +119,10 @@ pub struct Parsed {
     pub target: Option<String>,
     pub once: bool,
     pub json: bool,
+    /// `--plain`: the plain text view even on a terminal that can show the full screen.
+    pub plain: bool,
+    /// `--no-color`: the full-screen view without colour codes.
+    pub no_color: bool,
     /// Seconds between live readings.
     pub interval_s: f64,
     /// Whether `-i` was given: `--once` then waits that long between its two readings.
@@ -168,6 +172,8 @@ Options:
   --disk MOUNT[,MOUNT]   only these disks, by mount point (default: every disk)
   --net NAME[,NAME]      only these network interfaces (default: every one)
   --json                 one JSON object per reading; a missing reading is null
+  --plain                the plain text view, not the full screen on a terminal
+  --no-color             the full screen without colour (NO_COLOR does the same)
   -s, --signal NAME|NUMBER  kill: the signal to send (TERM, SIGSTOP, 19; 1 to 64)
   --no-defaults          do not read the file of default arguments (aether/args)
 ";
@@ -198,6 +204,8 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
         target: None,
         once: false,
         json: false,
+        plain: false,
+        no_color: false,
         interval_s: 1.0,
         interval_given: false,
         force: false,
@@ -226,6 +234,8 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
             "-V" | "--version" => p.command = "version",
             "--once" => p.once = true,
             "--json" => p.json = true,
+            "--plain" => p.plain = true,
+            "--no-color" => p.no_color = true,
             "--flat" => p.view.flat = true,
             "--reverse" => p.view.reverse = true,
             "--steady" => p.view.steady = true,

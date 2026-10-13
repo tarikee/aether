@@ -2,12 +2,11 @@
 //! chooses. A process whose parent is not in the list is a root, and a loop in the parent
 //! links is walked once, so every process appears exactly once.
 //!
-//! The scratch vectors live in one shared `Tree` (see `shared`), so they are kept between
-//! ticks and grow only when the list does.
+//! The scratch vectors live in the `Tree` the live loop keeps between ticks, so they grow only
+//! when the list does.
 
 use aether::sys::Proc;
 use std::cmp::Ordering;
-use std::sync::{Mutex, MutexGuard};
 
 /// The deepest level drawn; a process below it is drawn at this depth.
 pub const MAX_DEPTH: u8 = 63;
@@ -48,14 +47,6 @@ pub struct Tree {
     kids: Vec<usize>,
     seen: Vec<bool>,
     stack: Vec<Frame>,
-}
-
-/// The one tree the program keeps between ticks.
-static SHARED: Mutex<Tree> = Mutex::new(Tree::new());
-
-/// The shared tree. A poisoned lock still hands over its scratch space.
-pub fn shared() -> MutexGuard<'static, Tree> {
-    SHARED.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 impl Tree {
