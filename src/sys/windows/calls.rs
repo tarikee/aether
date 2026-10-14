@@ -24,7 +24,7 @@ use windows_sys::Wdk::System::Threading::{
 };
 use windows_sys::Win32::Foundation::{
     CloseHandle, GetLastError, BOOL, ERROR_ACCESS_DENIED, ERROR_BUFFER_OVERFLOW, FILETIME, HANDLE,
-    HWND, INVALID_HANDLE_VALUE, LPARAM, LUID, NO_ERROR, STATUS_INFO_LENGTH_MISMATCH,
+    HWND, INVALID_HANDLE_VALUE, LPARAM, LUID, NO_ERROR, STATUS_INFO_LENGTH_MISMATCH, SYSTEMTIME,
     UNICODE_STRING, WAIT_OBJECT_0,
 };
 use windows_sys::Win32::NetworkManagement::IpHelper::{
@@ -57,7 +57,7 @@ use windows_sys::Win32::System::Power::{
 };
 use windows_sys::Win32::System::ProcessStatus::{GetPerformanceInfo, PERFORMANCE_INFORMATION};
 use windows_sys::Win32::System::SystemInformation::{
-    GetSystemInfo, GetSystemTimeAsFileTime, GetTickCount64, SYSTEM_INFO,
+    GetLocalTime, GetSystemInfo, GetSystemTimeAsFileTime, GetTickCount64, SYSTEM_INFO,
 };
 use windows_sys::Win32::System::Threading::{
     GetActiveProcessorCount, GetProcessTimes, GetSystemTimes, OpenProcess, OpenProcessToken,
@@ -981,6 +981,21 @@ pub fn catch_stops() {
         // SAFETY: a handler that only touches atomics and the console mode.
         unsafe { SetConsoleCtrlHandler(Some(on_ctrl), 1) };
     }
+}
+
+/// The local time of day as (hour, minute, second).
+pub fn local_hms() -> Option<(u32, u32, u32)> {
+    // SAFETY: GetLocalTime fills the zeroed struct it is given.
+    let t: SYSTEMTIME = unsafe {
+        let mut t: SYSTEMTIME = zeroed();
+        GetLocalTime(&mut t);
+        t
+    };
+    Some((
+        u32::from(t.wHour),
+        u32::from(t.wMinute),
+        u32::from(t.wSecond),
+    ))
 }
 
 /// Whether Ctrl-C (or the console closing) has asked the program to stop.

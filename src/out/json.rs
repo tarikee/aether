@@ -71,7 +71,7 @@ fn put(out: &mut Vec<u8>, s: &str) {
 }
 
 /// A JSON string, with every character that must be escaped escaped.
-fn string(out: &mut Vec<u8>, s: &str) {
+pub(crate) fn string(out: &mut Vec<u8>, s: &str) {
     out.push(b'"');
     for c in s.chars() {
         match c {

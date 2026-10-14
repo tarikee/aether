@@ -1098,6 +1098,14 @@ fn net_load(n: &aether::sys::NetSample) -> Option<NetLoad> {
     }
 }
 
+/// The first interface's load as a percent of its link; `None` without a link speed or a rate.
+pub(crate) fn net_pct(n: &aether::sys::NetSample) -> Option<f32> {
+    match net_load(n) {
+        Some(NetLoad::Pct(p)) => Some(p),
+        _ => None,
+    }
+}
+
 /// A percentage with one decimal under 10 and none from 10, the sign not included.
 fn pct_short(x: f32) -> String {
     if x < 9.95 {

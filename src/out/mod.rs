@@ -2,6 +2,8 @@
 
 pub mod history;
 pub mod json;
+pub mod jsonin;
+pub mod peaks;
 pub mod screen;
 pub mod text;
 pub mod tree;

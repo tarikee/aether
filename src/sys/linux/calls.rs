@@ -119,6 +119,20 @@ pub fn catch_stops() {
     }
 }
 
+/// The local time of day as (hour, minute, second).
+pub fn local_hms() -> Option<(u32, u32, u32)> {
+    // SAFETY: time takes a null pointer; localtime_r fills the struct it is given.
+    let tm = unsafe {
+        let now = libc::time(std::ptr::null_mut());
+        let mut tm: libc::tm = std::mem::zeroed();
+        if libc::localtime_r(&now, &mut tm).is_null() {
+            return None;
+        }
+        tm
+    };
+    Some((tm.tm_hour as u32, tm.tm_min as u32, tm.tm_sec as u32))
+}
+
 /// Whether a stop signal has come since `catch_stops`.
 pub fn stop_requested() -> bool {
     STOP.load(Ordering::SeqCst)

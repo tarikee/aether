@@ -78,6 +78,21 @@ Usage:
       asks the process to stop and waits 3 s; says if it is still there.
       --force kills it. By NAME it lists the matches and asks first; -y skips the question.
       -s sends that one signal and does not wait.
+  aether record [--to FILE] [--for DURATION] [-i SECS] [--only LIST]
+      reads without drawing until Ctrl-C or DURATION (90s, 30m, 8h), then prints the peaks:
+      the highest value of each reading, when, and the average; the five processes with the
+      most CPU and the five with the most memory. --json prints that as one object.
+      --to FILE also writes one JSON line per reading, the processes cut to the 20 highest
+      by CPU and the 20 by memory.
+  aether peaks FILE
+      the same summary from a file `record --to` wrote (or from any `aether --json` output)
+  aether alert RULE... [--run CMD] [-i SECS] [--once]
+      prints a line when a rule starts and stops holding. RULE is KEY>VALUE or KEY<VALUE, with
+      an optional hold time: cpu>90/30s. KEY: cpu, mem, swap, gpu, vram, temp (hottest, C),
+      disk:MOUNT (used %), net (the first line's NET %), battery.
+      --run CMD runs CMD (sh -c; cmd /C on Windows) at each firing, with AETHER_RULE,
+      AETHER_VALUE and AETHER_STATE set. --once: two readings, the rules that hold are
+      printed; exit 1 if any holds, 0 if none.
   aether check
       what this machine and OS offer, and what is missing
   aether version
@@ -102,9 +117,33 @@ Options:
   --plain                the plain text view, not the full screen on a terminal
   --no-color             the full screen without colour (NO_COLOR does the same)
   --no-keys              the full screen takes no keys
+  --to FILE              record: also write every reading to FILE, one JSON line each
+  --for DURATION         record: stop after this long (90s, 30m, 8h)
+  --run CMD              alert: the command run when a rule fires
   -s, --signal NAME|NUMBER  kill: the signal to send (TERM, SIGSTOP, 19; 1 to 64)
   --no-defaults          do not read the file of default arguments (aether/args)
 ```
+
+## Record and alert
+
+`aether record` reads like the live view without drawing, until Ctrl-C or `--for 30m`, then
+prints the peaks: for CPU, memory, swap, each GPU (use, VRAM, temperature), the hottest
+temperature, each disk's read and write rate and each interface's rates, the highest value, when
+it was (time into the run) and the average; then the five processes with the highest CPU and the
+five with the most memory at any moment. Memory stays flat however long it runs: it keeps
+running maxima and sums, not the readings. `--json` prints the summary as one object.
+
+`--to FILE` also writes one JSON line per reading, in the `--json` format. A line keeps only the
+20 processes with the highest CPU and the 20 with the most memory (a full list would be about
+80 kB a reading; a line is about 8 kB here). `aether peaks FILE` prints the same summary from
+such a file, or from any `aether --json` output.
+
+`aether alert 'cpu>90/30s' 'disk:/>95' --run 'notify-send full'` prints a line when a rule has
+held for its hold time (`fired`) and when it stops (`cleared`). Keys: `cpu`, `mem`, `swap`, `gpu`,
+`vram`, `temp` (the hottest sensor, in degrees C), `disk:MOUNT` (used %), `net` (the first line's
+NET %), `battery`. `--run` runs the command through the shell at each firing, with `AETHER_RULE`,
+`AETHER_VALUE` and `AETHER_STATE` set. `--once` checks once, prints the rules that hold and exits
+1 if any does, 0 if none: for scripts and cron.
 
 ## JSON
 

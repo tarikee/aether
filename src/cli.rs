@@ -135,7 +135,32 @@ pub struct Parsed {
     pub signal: Option<String>,
     /// `--no-defaults`: the file of default arguments is not read.
     pub no_defaults: bool,
+    /// `record --to FILE`: where the readings are written.
+    pub to: Option<String>,
+    /// `record --for DURATION`, in seconds.
+    pub duration_s: Option<f64>,
+    /// `alert --run CMD`: the command run on each firing.
+    pub run: Option<String>,
+    /// The rules of `alert`, as written.
+    pub rules: Vec<String>,
     pub view: View,
+}
+
+/// A length of time as `90s`, `30m` or `8h` (a whole or decimal number and one unit), in seconds.
+pub fn duration(text: &str) -> Result<f64, String> {
+    let bad = || format!("{text} is not a time: write 90s, 30m or 8h");
+    let (num, unit) = text.split_at(text.len().saturating_sub(1));
+    let scale = match unit {
+        "s" => 1.0,
+        "m" => 60.0,
+        "h" => 3600.0,
+        _ => return Err(bad()),
+    };
+    num.parse::<f64>()
+        .ok()
+        .filter(|n| n.is_finite() && *n > 0.0)
+        .map(|n| n * scale)
+        .ok_or_else(bad)
 }
 
 /// The grammar, as `aether help` prints it.
@@ -153,6 +178,21 @@ Usage:
       asks the process to stop and waits 3 s; says if it is still there.
       --force kills it. By NAME it lists the matches and asks first; -y skips the question.
       -s sends that one signal and does not wait.
+  aether record [--to FILE] [--for DURATION] [-i SECS] [--only LIST]
+      reads without drawing until Ctrl-C or DURATION (90s, 30m, 8h), then prints the peaks:
+      the highest value of each reading, when, and the average; the five processes with the
+      most CPU and the five with the most memory. --json prints that as one object.
+      --to FILE also writes one JSON line per reading, the processes cut to the 20 highest
+      by CPU and the 20 by memory.
+  aether peaks FILE
+      the same summary from a file `record --to` wrote (or from any `aether --json` output)
+  aether alert RULE... [--run CMD] [-i SECS] [--once]
+      prints a line when a rule starts and stops holding. RULE is KEY>VALUE or KEY<VALUE, with
+      an optional hold time: cpu>90/30s. KEY: cpu, mem, swap, gpu, vram, temp (hottest, C),
+      disk:MOUNT (used %), net (the first line's NET %), battery.
+      --run CMD runs CMD (sh -c; cmd /C on Windows) at each firing, with AETHER_RULE,
+      AETHER_VALUE and AETHER_STATE set. --once: two readings, the rules that hold are
+      printed; exit 1 if any holds, 0 if none.
   aether check
       what this machine and OS offer, and what is missing
   aether version
@@ -177,6 +217,9 @@ Options:
   --plain                the plain text view, not the full screen on a terminal
   --no-color             the full screen without colour (NO_COLOR does the same)
   --no-keys              the full screen takes no keys
+  --to FILE              record: also write every reading to FILE, one JSON line each
+  --for DURATION         record: stop after this long (90s, 30m, 8h)
+  --run CMD              alert: the command run when a rule fires
   -s, --signal NAME|NUMBER  kill: the signal to send (TERM, SIGSTOP, 19; 1 to 64)
   --no-defaults          do not read the file of default arguments (aether/args)
 ";
@@ -216,6 +259,10 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
         yes: false,
         signal: None,
         no_defaults: false,
+        to: None,
+        duration_s: None,
+        run: None,
+        rules: Vec::new(),
         view: View {
             by: Sort::Cpu,
             reverse: false,
@@ -256,6 +303,9 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
             "--force" => p.force = true,
             "-y" | "--yes" => p.yes = true,
             "--no-defaults" => p.no_defaults = true,
+            "--to" => p.to = Some(value(&mut it, a)?.to_string()),
+            "--for" => p.duration_s = Some(duration(value(&mut it, a)?)?),
+            "--run" => p.run = Some(value(&mut it, a)?.to_string()),
             "-s" | "--signal" => p.signal = Some(value(&mut it, a)?.to_string()),
             "-i" | "--interval" => {
                 let v = value(&mut it, a)?;
@@ -316,11 +366,30 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
             p.command = "kill";
             p.target = Some((*t).to_string());
         }
+        ["record"] => p.command = "record",
+        ["peaks", f] => {
+            p.command = "peaks";
+            p.target = Some((*f).to_string());
+        }
+        ["alert", rules @ ..] if !rules.is_empty() => {
+            p.command = "alert";
+            p.rules = rules.iter().map(|r| (*r).to_string()).collect();
+        }
+        ["peaks"] => return Err("peaks needs a FILE".to_string()),
+        ["alert"] => return Err("alert needs at least one rule, like cpu>90/30s".to_string()),
+        ["record", ..] => return Err("record takes no argument; use --to FILE".to_string()),
+        ["peaks", ..] => return Err("peaks needs one FILE".to_string()),
         ["proc" | "kill", ..] => return Err("needs one PID or NAME".to_string()),
         [w, ..] => return Err(format!("unknown command {w}")),
     }
     if p.signal.is_some() && p.command != "kill" {
         return Err("--signal goes with kill".to_string());
+    }
+    if (p.to.is_some() || p.duration_s.is_some()) && p.command != "record" {
+        return Err("--to and --for go with record".to_string());
+    }
+    if p.run.is_some() && p.command != "alert" {
+        return Err("--run goes with alert".to_string());
     }
     if p.signal.is_some() && p.force {
         return Err("--signal and --force do not go together".to_string());
@@ -396,6 +465,32 @@ mod tests {
             p.view.only,
             Some(vec!["cpu".to_string(), "mem".to_string()])
         );
+    }
+
+    #[test]
+    fn record_peaks_and_alert_are_read() {
+        let p = parse(&args("record --to f.jsonl --for 90s -i 2")).unwrap();
+        assert_eq!(p.command, "record");
+        assert_eq!(
+            (p.to.as_deref(), p.duration_s, p.interval_s),
+            (Some("f.jsonl"), Some(90.0), 2.0)
+        );
+        assert_eq!(
+            parse(&args("record --for 8h")).unwrap().duration_s,
+            Some(28800.0)
+        );
+        assert!(parse(&args("record --for 90")).is_err());
+        assert!(parse(&args("record --for 0s")).is_err());
+        let p = parse(&args("peaks f.jsonl --json")).unwrap();
+        assert_eq!((p.command, p.target.as_deref()), ("peaks", Some("f.jsonl")));
+        assert!(parse(&args("peaks")).is_err());
+        let p = parse(&args("alert cpu>90/30s mem>80 --run beep --once")).unwrap();
+        assert_eq!(p.command, "alert");
+        assert_eq!(p.rules, vec!["cpu>90/30s", "mem>80"]);
+        assert_eq!(p.run.as_deref(), Some("beep"));
+        assert!(parse(&args("alert")).is_err());
+        assert!(parse(&args("--to f")).is_err());
+        assert!(parse(&args("--run x")).is_err());
     }
 
     #[test]
