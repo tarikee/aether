@@ -22,12 +22,33 @@ const NAMES: &[(&str, i32)] = &[
     ("STOP", libc::SIGSTOP),
 ];
 
-#[cfg(not(unix))]
+/// Windows has two: TERM asks the windows to close, KILL terminates.
+#[cfg(windows)]
+const NAMES: &[(&str, i32)] = &[("KILL", 9), ("TERM", 15)];
+
+#[cfg(not(any(unix, windows)))]
 const NAMES: &[(&str, i32)] = &[];
 
-/// The number of a signal given as a name (`TERM`, `SIGTERM`, any case) or as a number 1 to 64.
+/// What the answer to an unknown signal suggests.
+#[cfg(not(windows))]
+const SIGNAL_HINT: &str = "use a name such as TERM or STOP, or a number from 1 to 64";
+#[cfg(windows)]
+const SIGNAL_HINT: &str = "Windows has only TERM (15) and KILL (9)";
+
+/// Why a process is still there.
+#[cfg(not(windows))]
+const STILL_RUNNING: &str = "still running after 3 s; use --force";
+#[cfg(windows)]
+const STILL_RUNNING: &str =
+    "still running: only a program with a window can be asked to close (it gets 3 s); use --force";
+
+/// The number of a signal given as a name (`TERM`, `SIGTERM`, any case) or as a number 1 to 64
+/// (on Windows, 9 or 15).
 pub(crate) fn signal_number(text: &str) -> Option<i32> {
     if let Ok(n) = text.parse::<i32>() {
+        if cfg!(windows) {
+            return NAMES.iter().any(|(_, k)| *k == n).then_some(n);
+        }
         return (1..=64).contains(&n).then_some(n);
     }
     let upper = text.to_ascii_uppercase();
@@ -57,7 +78,7 @@ pub fn run(parsed: &Parsed) -> ExitCode {
         Some(text) => match signal_number(text) {
             Some(sig) => Some(sig),
             None => {
-                eprintln!("aether: unknown signal {text}; use a name such as TERM or STOP, or a number from 1 to 64");
+                eprintln!("aether: unknown signal {text}; {SIGNAL_HINT}");
                 return ExitCode::from(2);
             }
         },
@@ -151,7 +172,7 @@ fn reason(e: EndError, pid: u32) -> String {
     match e {
         EndError::NotFound => format!("no such process ({pid})"),
         EndError::NotAllowed => "not allowed: it belongs to another user".to_string(),
-        EndError::StillRunning => "still running after 3 s; use --force".to_string(),
+        EndError::StillRunning => STILL_RUNNING.to_string(),
         EndError::Refused => "refused".to_string(),
     }
 }
@@ -165,15 +186,30 @@ mod tests {
     fn signals_by_name_with_or_without_sig_and_by_number() {
         assert_eq!(signal_number("STOP"), signal_number("SIGSTOP"));
         assert_eq!(signal_number("sigterm"), signal_number("TERM"));
-        assert_eq!(signal_number("19"), Some(19));
-        assert_eq!(signal_number("1"), Some(1));
-        assert_eq!(signal_number("64"), Some(64));
         assert_eq!(signal_number("0"), None);
         assert_eq!(signal_number("65"), None);
         assert_eq!(signal_number("NOPE"), None);
         assert_eq!(signal_number("SIG"), None);
+        #[cfg(not(windows))]
+        {
+            assert_eq!(signal_number("19"), Some(19));
+            assert_eq!(signal_number("1"), Some(1));
+            assert_eq!(signal_number("64"), Some(64));
+        }
         #[cfg(unix)]
         assert_eq!(signal_number("TERM"), Some(libc::SIGTERM));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_knows_term_and_kill_only() {
+        assert_eq!(signal_number("TERM"), Some(15));
+        assert_eq!(signal_number("sigkill"), Some(9));
+        assert_eq!(signal_number("9"), Some(9));
+        assert_eq!(signal_number("15"), Some(15));
+        assert_eq!(signal_number("HUP"), None);
+        assert_eq!(signal_number("STOP"), None);
+        assert_eq!(signal_number("1"), None);
     }
 
     #[test]
