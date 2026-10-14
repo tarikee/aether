@@ -2,6 +2,7 @@
 //! vendors is `VENDORS` below.
 
 pub mod amd;
+pub mod intel;
 pub mod procs;
 
 pub use procs::GpuProcs;
@@ -12,30 +13,35 @@ use std::path::Path;
 use crate::sys::{GpuSample, Root};
 
 /// THE list of vendors, by the names their files use.
-pub const VENDORS: &[&str] = &["amd"];
+pub const VENDORS: &[&str] = &["amd", "intel"];
 
 /// One graphics card, of a vendor's kind.
 enum Card {
     Amd(amd::Card),
+    Intel(intel::Card),
 }
 
 impl Card {
     fn blank(&self) -> GpuSample {
         match self {
             Card::Amd(c) => c.blank(),
+            Card::Intel(c) => c.blank(),
         }
     }
 
     fn read(&mut self, out: &mut GpuSample) {
         match self {
             Card::Amd(c) => c.read(out),
+            Card::Intel(c) => c.read(out),
         }
     }
 }
 
 /// Opens the card whose `device` folder is `dev`, by the first vendor that knows it.
 fn open_card(root: &Root, dev: &Path) -> Option<Card> {
-    amd::open(root, dev).map(Card::Amd)
+    amd::open(root, dev)
+        .map(Card::Amd)
+        .or_else(|| intel::open(dev).map(Card::Intel))
 }
 
 /// The graphics card source, with its files kept open.
