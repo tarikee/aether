@@ -1,5 +1,31 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1376" height="797" viewBox="0 0 1376 797">
 <rect x="0.5" y="0.5" width="1375" height="796" rx="10" ry="10" fill="#0d1117" stroke="#30363d" stroke-width="1"/>
+<rect x="133.6" y="23.0" width="8.4" height="3" fill="#39c5cf"/>
+<rect x="143.0" y="24.0" width="3.2" height="1" fill="#6e7681"/>
+<rect x="147.2" y="24.0" width="2.2" height="1" fill="#6e7681"/>
+<rect x="151.4" y="24.0" width="3.2" height="1" fill="#6e7681"/>
+<rect x="155.6" y="24.0" width="2.2" height="1" fill="#6e7681"/>
+<rect x="159.8" y="24.0" width="3.2" height="1" fill="#6e7681"/>
+<rect x="164.0" y="24.0" width="2.2" height="1" fill="#6e7681"/>
+<rect x="168.2" y="24.0" width="3.2" height="1" fill="#6e7681"/>
+<rect x="172.4" y="24.0" width="2.2" height="1" fill="#6e7681"/>
+<rect x="176.6" y="24.0" width="3.2" height="1" fill="#6e7681"/>
+<rect x="180.8" y="24.0" width="2.2" height="1" fill="#6e7681"/>
+<rect x="276.4" y="23.0" width="16.8" height="3" fill="#39c5cf"/>
+<rect x="294.2" y="24.0" width="3.2" height="1" fill="#6e7681"/>
+<rect x="298.4" y="24.0" width="2.2" height="1" fill="#6e7681"/>
+<rect x="302.6" y="24.0" width="3.2" height="1" fill="#6e7681"/>
+<rect x="306.8" y="24.0" width="2.2" height="1" fill="#6e7681"/>
+<rect x="311.0" y="24.0" width="3.2" height="1" fill="#6e7681"/>
+<rect x="315.2" y="24.0" width="2.2" height="1" fill="#6e7681"/>
+<rect x="319.4" y="24.0" width="3.2" height="1" fill="#6e7681"/>
+<rect x="323.6" y="24.0" width="2.2" height="1" fill="#6e7681"/>
+<rect x="419.2" y="23.0" width="25.2" height="3" fill="#39c5cf"/>
+<rect x="444.4" y="23.0" width="4.2" height="3" fill="#39c5cf"/>
+<rect x="453.8" y="24.0" width="3.2" height="1" fill="#6e7681"/>
+<rect x="458.0" y="24.0" width="2.2" height="1" fill="#6e7681"/>
+<rect x="462.2" y="24.0" width="3.2" height="1" fill="#6e7681"/>
+<rect x="466.4" y="24.0" width="2.2" height="1" fill="#6e7681"/>
 <path d="M24.4,41.5 H24.4 A4.2,4.2 0 0 0 20.2,45.7 V50.0" fill="none" stroke="#6e7681" stroke-width="1"/>
 <rect x="24.4" y="41.0" width="8.4" height="1" fill="#6e7681"/>
 <rect x="74.8" y="41.0" width="8.4" height="1" fill="#6e7681"/>
@@ -815,7 +841,19 @@
 <path d="M1351.6,772.5 H1351.6 A4.2,4.2 0 0 0 1355.8,768.3 V764.0" fill="none" stroke="#6e7681" stroke-width="1"/>
 <g font-family="ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;, monospace" font-size="13.5" dominant-baseline="central">
 <text x="24.4" y="24.5" fill="#39c5cf" font-weight="bold" textLength="50.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">aether</text>
-<text x="74.8" y="24.5" fill="#c9d1d9" textLength="1100.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">                                                                                                                        up 3d 04:12</text>
+<text x="100.0" y="24.5" fill="#6e7681" textLength="25.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">CPU</text>
+<text x="192.4" y="24.5" fill="#39c5cf" textLength="16.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">23</text>
+<text x="209.2" y="24.5" fill="#6e7681" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">%</text>
+<text x="242.8" y="24.5" fill="#6e7681" textLength="25.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">GPU</text>
+<text x="335.2" y="24.5" fill="#39c5cf" textLength="16.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">41</text>
+<text x="352.0" y="24.5" fill="#6e7681" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">%</text>
+<text x="385.6" y="24.5" fill="#6e7681" textLength="25.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">RAM</text>
+<text x="478.0" y="24.5" fill="#39c5cf" textLength="16.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">62</text>
+<text x="494.8" y="24.5" fill="#6e7681" textLength="8.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">%</text>
+<text x="528.4" y="24.5" fill="#6e7681" textLength="25.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">NET</text>
+<text x="553.6" y="24.5" fill="#c9d1d9" textLength="33.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> 2.8</text>
+<text x="587.2" y="24.5" fill="#6e7681" textLength="50.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> MiB/s</text>
+<text x="637.6" y="24.5" fill="#c9d1d9" textLength="537.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">                                                     up 3d 04:12</text>
 <text x="1175.2" y="24.5" fill="#6e7681" textLength="25.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> · </text>
 <text x="1200.4" y="24.5" fill="#c9d1d9" textLength="84.0" lengthAdjust="spacingAndGlyphs" xml:space="preserve">12 threads</text>
 <text x="1284.4" y="24.5" fill="#6e7681" textLength="25.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> · </text>
