@@ -130,7 +130,11 @@ pub fn local_hms() -> Option<(u32, u32, u32)> {
         }
         tm
     };
-    Some((tm.tm_hour as u32, tm.tm_min as u32, tm.tm_sec as u32))
+    Some((
+        u32::try_from(tm.tm_hour).ok()?,
+        u32::try_from(tm.tm_min).ok()?,
+        u32::try_from(tm.tm_sec).ok()?,
+    ))
 }
 
 /// Whether a stop signal has come since `catch_stops`.

@@ -142,7 +142,7 @@ impl GpuProcs {
                 vram = vram.saturating_add(info.vram);
                 true
             });
-            if let (Some(b), Some(w)) = (busy, wall_ns) {
+            if let (Some(b), Some(w)) = (busy, wall_ns.filter(|w| *w > 0)) {
                 let pct = (b as f64 / w as f64 * 100.0).min(100.0) as f32;
                 self.out.push((pid, pct, vram));
             }
