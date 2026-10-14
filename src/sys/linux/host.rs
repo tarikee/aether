@@ -35,7 +35,7 @@ impl Host {
 fn read_uptime(file: &mut PFile) -> Option<u64> {
     let text = std::str::from_utf8(fields(file.read()).next()?).ok()?;
     let secs: f64 = text.parse().ok()?;
-    Some(secs as u64)
+    (secs.is_finite() && secs >= 0.0).then_some(secs as u64)
 }
 
 #[cfg(test)]

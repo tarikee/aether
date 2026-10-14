@@ -26,3 +26,11 @@ jobs:
         run: cargo build --release
       - name: Run once, as JSON
         run: cargo run --release --quiet -- --once --json
+
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.87
+      - name: Test on the oldest Rust it supports
+        run: cargo test

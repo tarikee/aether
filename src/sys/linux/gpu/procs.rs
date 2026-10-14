@@ -192,7 +192,7 @@ impl GpuProcs {
                 .map(|c| (c.1 as f64 / c.2 as f64 * 100.0).min(100.0) as f32)
                 .reduce(f32::max);
             let fd_pct = ratio.or_else(|| {
-                busy.zip(wall_ns)
+                busy.zip(wall_ns.filter(|w| *w > 0))
                     .map(|(b, w)| (b as f64 / w as f64 * 100.0).min(100.0) as f32)
             });
             let theirs = nv.binary_search_by_key(&pid, |r| r.0).ok().map(|i| nv[i]);

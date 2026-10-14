@@ -100,13 +100,31 @@ pub fn peaks(parsed: &Parsed) -> ExitCode {
 fn summarise(path: &str) -> Result<Peaks, String> {
     let file = File::open(path).map_err(|e| format!("cannot read {path}: {e}"))?;
     let mut peaks = Peaks::default();
-    for (n, line) in BufReader::new(file).lines().enumerate() {
-        let line = line.map_err(|e| format!("{path}: {e}"))?;
+    let mut reader = BufReader::new(file);
+    let mut text = String::new();
+    let mut n = 0usize;
+    loop {
+        text.clear();
+        let got = reader
+            .read_line(&mut text)
+            .map_err(|e| format!("{path}: {e}"))?;
+        if got == 0 {
+            break;
+        }
+        n += 1;
+        // A line without its newline is the last one, and may have been cut off mid-write.
+        let whole = text.ends_with('\n');
+        let line = text.trim_end_matches(['\n', '\r']);
         if line.trim().is_empty() {
             continue;
         }
-        let r = jsonin::reading(&line).map_err(|m| format!("{path}: line {}: {m}", n + 1))?;
-        peaks.add(&r);
+        match jsonin::reading(line) {
+            Ok(r) => peaks.add(&r),
+            Err(_) if !whole => {
+                eprintln!("aether: {path}: last line incomplete, skipped");
+            }
+            Err(m) => return Err(format!("{path}: line {n}: {m}")),
+        }
     }
     if peaks.readings == 0 {
         return Err(format!("{path}: no readings"));
@@ -142,6 +160,21 @@ mod tests {
         std::fs::write(&f, "").unwrap();
         assert!(summarise(f.to_str().unwrap()).is_err());
         assert!(summarise(dir.join("none").to_str().unwrap()).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_cut_last_line_is_skipped_and_other_bad_lines_are_not() {
+        let dir = std::env::temp_dir().join(format!("aether-peaks-cut-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("rec.jsonl");
+        let path = f.to_str().unwrap();
+        std::fs::write(&f, "{\"t\":1}\n{\"t\":2,\"cpu\":{\"pct\":5").unwrap();
+        assert_eq!(summarise(path).unwrap().readings, 1);
+        std::fs::write(&f, "{\"t\":1}\n{\"t\":2,\"cpu\":{\"pct\":5}\n").unwrap();
+        assert!(summarise(path).unwrap_err().contains("line 2"));
+        std::fs::write(&f, "{\"t\":1}\nnot json\n{\"t\":3}\n").unwrap();
+        assert!(summarise(path).unwrap_err().contains("line 2"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

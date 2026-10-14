@@ -119,7 +119,7 @@ Usage:
   aether help
 
 Options:
-  -i, --interval SECS    seconds between live readings (default 1)
+  -i, --interval SECS    seconds between live readings, 0.1 to 3600 (default 1)
   --by KEY               sort the processes: cpu (default), mem, gpu, disk, pid, user,
                          threads, name, age (newest first; user is the uid)
   --reverse              turn the order round
@@ -138,7 +138,7 @@ Options:
   --no-keys              the full screen takes no keys and no mouse
   --no-mouse             the full screen takes keys but not the mouse
   --to FILE              record: also write every reading to FILE, one JSON line each
-  --for DURATION         record: stop after this long (90s, 30m, 8h)
+  --for DURATION         record: stop after this long (90s, 30m, 8h; at most 720h)
   --run CMD              alert: the command run when a rule fires
   -s, --signal NAME|NUMBER  kill: the signal to send (TERM, SIGSTOP, 19; 1 to 64)
   --no-defaults          do not read the file of default arguments (aether/args)

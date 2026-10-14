@@ -108,7 +108,12 @@ impl Card {
         out.vram_total = self.vram_total.as_mut().and_then(number);
         out.temp_c = self.temp.as_mut().and_then(Input::value);
         out.power_w = self.power.as_mut().and_then(Input::value);
-        out.fan_rpm = self.fan.as_mut().and_then(Input::value).map(|r| r as u32);
+        out.fan_rpm = self
+            .fan
+            .as_mut()
+            .and_then(Input::value)
+            .filter(|r| r.is_finite() && *r >= 0.0)
+            .map(|r| r as u32);
     }
 }
 

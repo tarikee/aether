@@ -110,6 +110,48 @@ fn named(list: &Option<Vec<String>>, name: &str) -> bool {
     }
 }
 
+/// The parts `--only` takes.
+pub const PARTS: &[&str] = &[
+    "cpu", "mem", "gpu", "sensors", "disk", "net", "battery", "host", "procs",
+];
+
+/// The names of what a reading has, for a message: `a, b`, or `none`.
+fn there(have: &[&str]) -> String {
+    if have.is_empty() {
+        "none".to_string()
+    } else {
+        have.join(", ")
+    }
+}
+
+/// The line for a mount that the reading does not have.
+pub fn missing_mount(name: &str, r: &aether::Reading) -> String {
+    let have: Vec<&str> = r.disks.iter().map(|d| d.mount.as_str()).collect();
+    format!("no mount \"{name}\"; there are: {}", there(&have))
+}
+
+/// The line for the first `--disk` mount or `--net` interface the reading does not have.
+pub fn missing_name(view: &View, r: &aether::Reading) -> Option<String> {
+    if let Some(list) = &view.disks {
+        if let Some(name) = list
+            .iter()
+            .find(|n| !r.disks.iter().any(|d| &d.mount == *n))
+        {
+            return Some(missing_mount(name, r));
+        }
+    }
+    if let Some(list) = &view.nets {
+        if let Some(name) = list.iter().find(|n| !r.nets.iter().any(|x| &x.name == *n)) {
+            let have: Vec<&str> = r.nets.iter().map(|x| x.name.as_str()).collect();
+            return Some(format!(
+                "no interface \"{name}\"; there are: {}",
+                there(&have)
+            ));
+        }
+    }
+    None
+}
+
 /// The parsed command line.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Parsed {
@@ -149,6 +191,12 @@ pub struct Parsed {
 }
 
 /// A length of time as `90s`, `30m` or `8h` (a whole or decimal number and one unit), in seconds.
+/// The shortest and longest `-i` interval, in seconds.
+const MIN_INTERVAL_S: f64 = 0.1;
+const MAX_INTERVAL_S: f64 = 3600.0;
+/// The longest `record --for`, in seconds: 30 days.
+const MAX_FOR_S: f64 = 30.0 * 86400.0;
+
 pub fn duration(text: &str) -> Result<f64, String> {
     let bad = || format!("{text} is not a time: write 90s, 30m or 8h");
     let (num, unit) = text.split_at(text.len().saturating_sub(1));
@@ -206,7 +254,7 @@ Usage:
   aether help
 
 Options:
-  -i, --interval SECS    seconds between live readings (default 1)
+  -i, --interval SECS    seconds between live readings, 0.1 to 3600 (default 1)
   --by KEY               sort the processes: cpu (default), mem, gpu, disk, pid, user,
                          threads, name, age (newest first; user is the uid)
   --reverse              turn the order round
@@ -225,7 +273,7 @@ Options:
   --no-keys              the full screen takes no keys and no mouse
   --no-mouse             the full screen takes keys but not the mouse
   --to FILE              record: also write every reading to FILE, one JSON line each
-  --for DURATION         record: stop after this long (90s, 30m, 8h)
+  --for DURATION         record: stop after this long (90s, 30m, 8h; at most 720h)
   --run CMD              alert: the command run when a rule fires
   -s, --signal NAME|NUMBER  kill: the signal to send (TERM, SIGSTOP, 19; 1 to 64)
   --no-defaults          do not read the file of default arguments (aether/args)
@@ -313,7 +361,13 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
             "-y" | "--yes" => p.yes = true,
             "--no-defaults" => p.no_defaults = true,
             "--to" => p.to = Some(value(&mut it, a)?.to_string()),
-            "--for" => p.duration_s = Some(duration(value(&mut it, a)?)?),
+            "--for" => {
+                let secs = duration(value(&mut it, a)?)?;
+                if secs > MAX_FOR_S {
+                    return Err("--for takes at most 720h (30 days)".to_string());
+                }
+                p.duration_s = Some(secs);
+            }
             "--run" => p.run = Some(value(&mut it, a)?.to_string()),
             "-s" | "--signal" => p.signal = Some(value(&mut it, a)?.to_string()),
             "-i" | "--interval" => {
@@ -322,8 +376,10 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
                 p.interval_s = v
                     .parse::<f64>()
                     .ok()
-                    .filter(|s| s.is_finite() && *s > 0.0)
-                    .ok_or_else(|| format!("{a} needs a number of seconds above 0"))?;
+                    .filter(|s| (MIN_INTERVAL_S..=MAX_INTERVAL_S).contains(s))
+                    .ok_or_else(|| {
+                        format!("{a} needs a number of seconds from 0.1 to 3600, not {v}")
+                    })?;
             }
             "--by" => {
                 p.view.by = match value(&mut it, a)? {
@@ -353,6 +409,12 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
             }
             "--only" => {
                 let list = value(&mut it, a)?;
+                if let Some(bad) = list.split(',').find(|s| !PARTS.contains(s)) {
+                    return Err(format!(
+                        "no part \"{bad}\"; there are: {}",
+                        PARTS.join(", ")
+                    ));
+                }
                 p.view.only = Some(list.split(',').map(str::to_string).collect());
             }
             _ if a.starts_with('-') && a.len() > 1 => return Err(format!("unknown option {a}")),
@@ -532,6 +594,41 @@ mod tests {
         assert!(parse(&args("--by disk2")).is_err());
         assert!(parse(&args("-i 0")).is_err());
         assert!(parse(&args("--nope")).is_err());
+    }
+
+    #[test]
+    fn unknown_parts_and_mounts_are_named() {
+        let err = parse(&args("--only cpu,nope")).unwrap_err();
+        assert!(
+            err.contains("no part \"nope\"; there are: cpu, mem"),
+            "{err}"
+        );
+        assert!(parse(&args("--only cpu,mem,net,procs")).is_ok());
+        let view = parse(&args("--disk /x")).unwrap().view;
+        let empty = aether::Reading::default();
+        assert_eq!(
+            missing_name(&view, &empty).as_deref(),
+            Some("no mount \"/x\"; there are: none")
+        );
+        let net = parse(&args("--net nope")).unwrap().view;
+        assert_eq!(
+            missing_name(&net, &empty).as_deref(),
+            Some("no interface \"nope\"; there are: none")
+        );
+        assert!(missing_name(&parse(&args("--once")).unwrap().view, &empty).is_none());
+    }
+
+    #[test]
+    fn interval_and_for_have_ranges() {
+        assert!(parse(&args("-i 0.1")).is_ok());
+        assert!(parse(&args("-i 3600")).is_ok());
+        assert!(parse(&args("-i 0.09")).is_err());
+        assert!(parse(&args("-i 3600.5")).is_err());
+        assert!(parse(&args("-i NaN")).is_err());
+        assert!(parse(&args("record -i 0.05")).is_err());
+        assert!(parse(&args("record --for 720h")).is_ok());
+        assert!(parse(&args("record --for 721h")).is_err());
+        assert!(parse(&args("record --for 0m")).is_err());
     }
 
     #[test]
