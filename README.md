@@ -168,6 +168,7 @@ thread shows no disk rate.
 | Themes and layout presets | not yet | yes |
 | Graphs per core and per process | not yet | yes |
 | NVIDIA and Intel GPUs | not yet | yes |
+| Windows | yes (see Status) | no (only the separate port btop4win) |
 | macOS and the BSDs | not yet (see Status) | yes |
 
 Both have: a tree, a filter, sort keys, signals, disks, network, sensors and battery.
@@ -177,7 +178,7 @@ Both have: a tree, a filter, sort keys, signals, disks, network, sensors and bat
 | System | Status |
 |---|---|
 | Linux | Built and run. AMD GPUs are read. NVIDIA and Intel GPUs are not yet. |
-| Windows | Compiles (checked with `cargo check`, not run). Every source says "not built for this OS yet", and the view falls back to plain. |
+| Windows | Built; its tests run on GitHub's Windows machine. Everything is read except sensors, load average and GPU use per process. GPU and battery are not yet seen on a real machine, and the view's keys are not built on Windows yet. |
 | macOS | Compiles (checked with `cargo check`, not run). Every source says "not built for this OS yet", and the view falls back to plain. |
 
 ## Licence
