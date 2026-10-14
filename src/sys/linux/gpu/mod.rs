@@ -2,6 +2,7 @@
 //! vendors is `VENDORS` below.
 
 pub mod amd;
+pub mod nvidia;
 pub mod procs;
 
 pub use procs::GpuProcs;
@@ -12,30 +13,33 @@ use std::path::Path;
 use crate::sys::{GpuSample, Root};
 
 /// THE list of vendors, by the names their files use.
-pub const VENDORS: &[&str] = &["amd"];
+pub const VENDORS: &[&str] = &["amd", "nvidia"];
 
 /// One graphics card, of a vendor's kind.
 enum Card {
-    Amd(amd::Card),
+    Amd(Box<amd::Card>),
+    Nvidia(nvidia::Card),
 }
 
 impl Card {
     fn blank(&self) -> GpuSample {
         match self {
             Card::Amd(c) => c.blank(),
+            Card::Nvidia(c) => c.blank(),
         }
     }
 
     fn read(&mut self, out: &mut GpuSample) {
         match self {
             Card::Amd(c) => c.read(out),
+            Card::Nvidia(c) => c.read(out),
         }
     }
 }
 
 /// Opens the card whose `device` folder is `dev`, by the first vendor that knows it.
 fn open_card(root: &Root, dev: &Path) -> Option<Card> {
-    amd::open(root, dev).map(Card::Amd)
+    amd::open(root, dev).map(|c| Card::Amd(Box::new(c)))
 }
 
 /// The graphics card source, with its files kept open.
@@ -54,6 +58,12 @@ impl Gpus {
                 cards.push(card);
             }
         }
+        // NVIDIA cards come from NVML, after the DRM cards.
+        cards.extend(
+            nvidia::cards(nvidia::session(root))
+                .into_iter()
+                .map(Card::Nvidia),
+        );
         let list = cards.iter().map(Card::blank).collect();
         Gpus { cards, list }
     }

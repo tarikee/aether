@@ -11,11 +11,15 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use super::nvidia;
 use crate::sys::linux::{
     calls,
     reader::{fields, lines, num, read_into},
 };
 use crate::sys::Root;
+
+/// One process's GPU use: (pid, percent, VRAM bytes), each `None` when unknown.
+pub type ProcUse = (u32, Option<f32>, Option<u64>);
 
 /// Our own processes whose descriptors are looked at again on each tick. Another user's cannot
 /// be read, so they are looked at once.
@@ -55,10 +59,12 @@ pub struct GpuProcs {
     alive: HashSet<u32>,
     cursor: usize,
     last: Option<Instant>,
-    out: Vec<(u32, f32, u64)>,
+    out: Vec<ProcUse>,
     uid: u32,
     /// The one buffer every fdinfo read goes through.
     buf: Vec<u8>,
+    /// The NVIDIA cards' processes, merged in with the fdinfo ones.
+    nv: nvidia::Procs,
 }
 
 impl GpuProcs {
@@ -72,15 +78,16 @@ impl GpuProcs {
             out: Vec::new(),
             uid: calls::uid(),
             buf: vec![0; FDINFO_CAP],
+            nv: nvidia::Procs::open(nvidia::session(root)),
         }
     }
 
-    /// For the given PIDs: (pid, percent, VRAM bytes). Unreadable processes are left out.
-    pub fn read(&mut self, pids: &[u32]) -> &[(u32, f32, u64)] {
+    /// For the given PIDs: (pid, percent, VRAM bytes). Processes with no reading are left out.
+    pub fn read(&mut self, pids: &[u32]) -> &[ProcUse] {
         self.read_at(pids, Instant::now())
     }
 
-    fn read_at(&mut self, pids: &[u32], now: Instant) -> &[(u32, f32, u64)] {
+    fn read_at(&mut self, pids: &[u32], now: Instant) -> &[ProcUse] {
         let wall_ns = self
             .last
             .and_then(|t| u64::try_from(now.saturating_duration_since(t).as_nanos()).ok())
@@ -120,6 +127,7 @@ impl GpuProcs {
             self.cursor = (self.cursor + k) % n;
         }
 
+        let nv = self.nv.read();
         self.out.clear();
         for &pid in pids {
             let Some(p) = self.procs.get_mut(&pid) else {
@@ -142,8 +150,18 @@ impl GpuProcs {
                 vram = vram.saturating_add(info.vram);
                 true
             });
-            if let (Some(b), Some(w)) = (busy, wall_ns) {
-                let pct = (b as f64 / w as f64 * 100.0).min(100.0) as f32;
+            // The fdinfo reading first; the NVIDIA reading fills in what it does not have.
+            let amd = match (busy, wall_ns) {
+                (Some(b), Some(w)) => Some(((b as f64 / w as f64 * 100.0).min(100.0) as f32, vram)),
+                _ => None,
+            };
+            let theirs = nv.binary_search_by_key(&pid, |r| r.0).ok().map(|i| nv[i]);
+            let pct = amd.map(|a| a.0).or(theirs.and_then(|r| r.1));
+            let vram = match amd {
+                Some((_, v)) => Some(v),
+                None => theirs.and_then(|r| r.2),
+            };
+            if pct.is_some() || vram.is_some() {
                 self.out.push((pid, pct, vram));
             }
         }
@@ -285,7 +303,13 @@ mod tests {
         let got = g.read_at(&pids, t0 + Duration::from_secs(1)).to_vec();
         let _ = fs::remove_dir_all(&tmp);
 
-        assert_eq!(got, vec![(1234, 30.0, 2_097_152), (1500, 100.0, 4_194_304)]);
+        assert_eq!(
+            got,
+            vec![
+                (1234, Some(30.0), Some(2_097_152)),
+                (1500, Some(100.0), Some(4_194_304))
+            ]
+        );
     }
 
     #[test]

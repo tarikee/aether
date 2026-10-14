@@ -2,8 +2,9 @@
 //! Each wrapper is safe to call and never panics; a failed call is `None` or an `Err`.
 #![allow(unsafe_code)]
 
-use std::ffi::CStr;
+use std::ffi::{c_char, c_int, c_uint, c_void, CStr};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::OnceLock;
 
 /// Total and used bytes of the file system at `path`, by `statvfs`: total = blocks x frsize,
 /// used = (blocks - free blocks) x frsize. `None` if the call fails.
@@ -220,4 +221,288 @@ pub fn input_ready(ms: i32) -> bool {
 pub fn read_input(buf: &mut [u8]) -> Option<usize> {
     let n = unsafe { libc::read(libc::STDIN_FILENO, buf.as_mut_ptr().cast(), buf.len()) };
     usize::try_from(n).ok()
+}
+
+// NVIDIA: NVML, loaded at run time and never linked. Written from NVML's documented interface.
+
+/// NVML's answers that the readers act on.
+const NVML_OK: c_int = 0;
+const NVML_NOT_FOUND: c_int = 6;
+const NVML_INSUFFICIENT_SIZE: c_int = 7;
+
+/// An NVML device handle, kept as an address so that it can be shared between threads.
+pub type NvDevice = usize;
+
+/// `nvmlUtilization_t`: percent busy of the GPU and of its memory.
+#[repr(C)]
+#[derive(Clone, Copy, Default, Debug, PartialEq)]
+pub struct NvUtilization {
+    pub gpu: c_uint,
+    pub memory: c_uint,
+}
+
+/// `nvmlMemory_t`: the card's VRAM in bytes.
+#[repr(C)]
+#[derive(Clone, Copy, Default, Debug, PartialEq)]
+pub struct NvMemory {
+    pub total: u64,
+    pub free: u64,
+    pub used: u64,
+}
+
+/// `nvmlProcessInfo_v1_t`: one process on a card. `used_gpu_memory` is `u64::MAX` when unknown.
+#[repr(C)]
+#[derive(Clone, Copy, Default, Debug, PartialEq)]
+pub struct NvProcInfo {
+    pub pid: c_uint,
+    pub used_gpu_memory: u64,
+    pub gpu_instance_id: c_uint,
+    pub compute_instance_id: c_uint,
+}
+
+/// `nvmlProcessUtilizationSample_t`: one process's use of the card, in percent.
+#[repr(C)]
+#[derive(Clone, Copy, Default, Debug, PartialEq)]
+pub struct NvSample {
+    pub pid: c_uint,
+    pub time_stamp: u64,
+    pub sm_util: c_uint,
+    pub mem_util: c_uint,
+    pub enc_util: c_uint,
+    pub dec_util: c_uint,
+}
+
+type InitFn = unsafe extern "C" fn() -> c_int;
+type CountFn = unsafe extern "C" fn(*mut c_uint) -> c_int;
+type HandleFn = unsafe extern "C" fn(c_uint, *mut *mut c_void) -> c_int;
+type NameFn = unsafe extern "C" fn(*mut c_void, *mut c_char, c_uint) -> c_int;
+type UtilFn = unsafe extern "C" fn(*mut c_void, *mut NvUtilization) -> c_int;
+type MemoryFn = unsafe extern "C" fn(*mut c_void, *mut NvMemory) -> c_int;
+type TempFn = unsafe extern "C" fn(*mut c_void, c_int, *mut c_uint) -> c_int;
+type PowerFn = unsafe extern "C" fn(*mut c_void, *mut c_uint) -> c_int;
+type ProcsFn = unsafe extern "C" fn(*mut c_void, *mut c_uint, *mut NvProcInfo) -> c_int;
+type SamplesFn = unsafe extern "C" fn(*mut c_void, *mut NvSample, *mut c_uint, u64) -> c_int;
+
+/// An open NVML library with its functions, for the whole run.
+pub struct Nvml {
+    /// The library handle, kept open (as an address) for the run.
+    _lib: usize,
+    count: CountFn,
+    handle: HandleFn,
+    name: NameFn,
+    utilization: UtilFn,
+    memory: MemoryFn,
+    temperature: TempFn,
+    power: PowerFn,
+    compute: ProcsFn,
+    graphics: ProcsFn,
+    /// Missing on some drivers: then the per-process percent is unknown.
+    samples: Option<SamplesFn>,
+}
+
+/// The NVML session of this run: loaded on first use, and never tried again. `None` when the
+/// library or one of its functions is missing, or NVML does not start.
+pub fn nvml() -> Option<&'static Nvml> {
+    static NVML: OnceLock<Option<Nvml>> = OnceLock::new();
+    NVML.get_or_init(|| open_lib(c"libnvidia-ml.so.1")).as_ref()
+}
+
+/// Opens the library `name` and starts NVML from it. The library is closed again on failure.
+fn open_lib(name: &CStr) -> Option<Nvml> {
+    // SAFETY: `name` is NUL-terminated; a null result is handled below.
+    let lib = unsafe { libc::dlopen(name.as_ptr(), libc::RTLD_LAZY | libc::RTLD_LOCAL) };
+    if lib.is_null() {
+        return None;
+    }
+    let nvml = from_lib(lib);
+    if nvml.is_none() {
+        // SAFETY: `lib` is the open handle from dlopen above, closed once.
+        unsafe { libc::dlclose(lib) };
+    }
+    nvml
+}
+
+/// The function `name` of the open library `lib`, as the function pointer type `F`.
+fn func<F: Copy>(lib: *mut c_void, name: &CStr) -> Option<F> {
+    if std::mem::size_of::<F>() != std::mem::size_of::<*mut c_void>() {
+        return None;
+    }
+    // SAFETY: `lib` is an open library handle and `name` is NUL-terminated.
+    let p = unsafe { libc::dlsym(lib, name.as_ptr()) };
+    if p.is_null() {
+        return None;
+    }
+    // SAFETY: the caller names a function pointer type `F`, the same size as the address `p`,
+    // and the symbol is that function. Both are pointer-sized, so the bytes of `p` are its value.
+    Some(unsafe { std::mem::transmute_copy::<*mut c_void, F>(&p) })
+}
+
+fn from_lib(lib: *mut c_void) -> Option<Nvml> {
+    let init: InitFn = func(lib, c"nvmlInit_v2")?;
+    // SAFETY: nvmlInit_v2 takes no arguments.
+    if unsafe { init() } != NVML_OK {
+        return None;
+    }
+    Some(Nvml {
+        _lib: lib as usize,
+        count: func(lib, c"nvmlDeviceGetCount_v2")?,
+        handle: func(lib, c"nvmlDeviceGetHandleByIndex_v2")?,
+        name: func(lib, c"nvmlDeviceGetName")?,
+        utilization: func(lib, c"nvmlDeviceGetUtilizationRates")?,
+        memory: func(lib, c"nvmlDeviceGetMemoryInfo")?,
+        temperature: func(lib, c"nvmlDeviceGetTemperature")?,
+        power: func(lib, c"nvmlDeviceGetPowerUsage")?,
+        compute: func(lib, c"nvmlDeviceGetComputeRunningProcesses_v3")?,
+        graphics: func(lib, c"nvmlDeviceGetGraphicsRunningProcesses_v3")?,
+        samples: func(lib, c"nvmlDeviceGetProcessUtilization"),
+    })
+}
+
+impl Nvml {
+    /// How many devices NVML knows.
+    pub fn device_count(&self) -> Option<u32> {
+        let mut n: c_uint = 0;
+        // SAFETY: NVML writes one unsigned int, which we pass.
+        (unsafe { (self.count)(&mut n) } == NVML_OK).then_some(n)
+    }
+
+    /// The handle of device `index`.
+    pub fn device(&self, index: u32) -> Option<NvDevice> {
+        let mut h: *mut c_void = std::ptr::null_mut();
+        // SAFETY: NVML writes one device handle, which we pass.
+        if unsafe { (self.handle)(index, &mut h) } != NVML_OK || h.is_null() {
+            return None;
+        }
+        Some(h as NvDevice)
+    }
+
+    /// The device's name, as NVML has it (at most 96 bytes).
+    pub fn name(&self, dev: NvDevice) -> Option<String> {
+        let mut buf = [0 as c_char; 96];
+        // SAFETY: NVML writes at most `buf.len()` bytes into `buf`.
+        if unsafe { (self.name)(dev as *mut c_void, buf.as_mut_ptr(), buf.len() as c_uint) }
+            != NVML_OK
+        {
+            return None;
+        }
+        let bytes: Vec<u8> = buf
+            .iter()
+            .take_while(|&&b| b != 0)
+            .map(|&b| b as u8)
+            .collect();
+        Some(String::from_utf8_lossy(&bytes).trim().to_string())
+    }
+
+    /// The device's percent busy, GPU and memory.
+    pub fn utilization(&self, dev: NvDevice) -> Option<NvUtilization> {
+        let mut u = NvUtilization::default();
+        // SAFETY: NVML writes one NvUtilization, which we pass.
+        (unsafe { (self.utilization)(dev as *mut c_void, &mut u) } == NVML_OK).then_some(u)
+    }
+
+    /// The device's VRAM.
+    pub fn memory(&self, dev: NvDevice) -> Option<NvMemory> {
+        let mut m = NvMemory::default();
+        // SAFETY: NVML writes one NvMemory, which we pass.
+        (unsafe { (self.memory)(dev as *mut c_void, &mut m) } == NVML_OK).then_some(m)
+    }
+
+    /// The GPU's temperature in degrees Celsius.
+    pub fn temperature(&self, dev: NvDevice) -> Option<u32> {
+        let mut t: c_uint = 0;
+        // SAFETY: NVML writes one unsigned int, which we pass; sensor 0 is the GPU.
+        (unsafe { (self.temperature)(dev as *mut c_void, 0, &mut t) } == NVML_OK).then_some(t)
+    }
+
+    /// The card's power draw in milliwatts.
+    pub fn power_mw(&self, dev: NvDevice) -> Option<u32> {
+        let mut mw: c_uint = 0;
+        // SAFETY: NVML writes one unsigned int, which we pass.
+        (unsafe { (self.power)(dev as *mut c_void, &mut mw) } == NVML_OK).then_some(mw)
+    }
+
+    /// The compute (or, if `graphics`, graphics) processes on `dev`, into `out`. False when NVML
+    /// does not say; `out` is then empty.
+    pub fn processes(&self, dev: NvDevice, graphics: bool, out: &mut Vec<NvProcInfo>) -> bool {
+        let f = if graphics {
+            self.graphics
+        } else {
+            self.compute
+        };
+        let mut cap: c_uint = 16;
+        for _ in 0..4 {
+            out.clear();
+            out.resize(cap as usize, NvProcInfo::default());
+            let mut count = cap;
+            // SAFETY: `out` holds `cap` structs, and NVML writes at most `count` (= `cap`) of them.
+            let rc = unsafe { f(dev as *mut c_void, &mut count, out.as_mut_ptr()) };
+            if rc == NVML_OK {
+                out.truncate(count.min(cap) as usize);
+                return true;
+            }
+            if rc != NVML_INSUFFICIENT_SIZE {
+                break;
+            }
+            // On this answer NVML puts the size it needs in `count`.
+            cap = count.max(cap.saturating_mul(2));
+        }
+        out.clear();
+        false
+    }
+
+    /// The process samples on `dev` newer than `since`, into `out`. False when NVML does not say
+    /// (or has no such function). No samples at all is true with an empty `out`.
+    pub fn samples(&self, dev: NvDevice, since: u64, out: &mut Vec<NvSample>) -> bool {
+        let Some(f) = self.samples else {
+            return false;
+        };
+        let mut cap: c_uint = 64;
+        for _ in 0..4 {
+            out.clear();
+            out.resize(cap as usize, NvSample::default());
+            let mut count = cap;
+            // SAFETY: `out` holds `cap` structs, and NVML writes at most `count` (= `cap`) of them.
+            let rc = unsafe { f(dev as *mut c_void, out.as_mut_ptr(), &mut count, since) };
+            if rc == NVML_OK {
+                out.truncate(count.min(cap) as usize);
+                return true;
+            }
+            if rc == NVML_NOT_FOUND {
+                out.clear();
+                return true;
+            }
+            if rc != NVML_INSUFFICIENT_SIZE {
+                break;
+            }
+            cap = count.max(cap.saturating_mul(2));
+        }
+        out.clear();
+        false
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use std::mem::{offset_of, size_of};
+
+    #[test]
+    fn the_nvml_structs_have_the_layout_of_the_library() {
+        assert_eq!(size_of::<NvUtilization>(), 8);
+        assert_eq!(size_of::<NvMemory>(), 24);
+        assert_eq!(offset_of!(NvMemory, used), 16);
+        assert_eq!(size_of::<NvProcInfo>(), 24);
+        assert_eq!(offset_of!(NvProcInfo, used_gpu_memory), 8);
+        assert_eq!(offset_of!(NvProcInfo, compute_instance_id), 20);
+        assert_eq!(size_of::<NvSample>(), 32);
+        assert_eq!(offset_of!(NvSample, time_stamp), 8);
+        assert_eq!(offset_of!(NvSample, sm_util), 16);
+        assert_eq!(offset_of!(NvSample, dec_util), 28);
+    }
+
+    #[test]
+    fn a_missing_library_gives_no_nvml_session() {
+        assert!(open_lib(c"libaether-no-such-library.so.0").is_none());
+    }
 }

@@ -338,7 +338,7 @@ impl Procs {
 
 /// The GPU use of each process, from the GPU source's reading. A process it does not list has
 /// no GPU reading (`None`), so a process that uses no GPU is never shown as 0.
-fn merge_gpu(list: &mut [Proc], gpu: &[(u32, f32, u64)]) {
+fn merge_gpu(list: &mut [Proc], gpu: &[(u32, Option<f32>, Option<u64>)]) {
     for p in list.iter_mut() {
         p.gpu_pct = None;
         p.vram = None;
@@ -346,8 +346,8 @@ fn merge_gpu(list: &mut [Proc], gpu: &[(u32, f32, u64)]) {
     for &(pid, pct, vram) in gpu {
         if let Ok(i) = list.binary_search_by_key(&pid, |p| p.pid) {
             if let Some(p) = list.get_mut(i) {
-                p.gpu_pct = Some(pct);
-                p.vram = Some(vram);
+                p.gpu_pct = pct;
+                p.vram = vram;
             }
         }
     }
@@ -748,9 +748,20 @@ mod tests {
     }
 
     #[test]
+    fn an_nvidia_reading_without_percent_still_shows_its_vram() {
+        let mut list = vec![blank(10), blank(20)];
+        merge_gpu(&mut list, &[(10, None, Some(4096)), (20, Some(12.5), None)]);
+        assert_eq!((list[0].gpu_pct, list[0].vram), (None, Some(4096)));
+        assert_eq!((list[1].gpu_pct, list[1].vram), (Some(12.5), None));
+    }
+
+    #[test]
     fn gpu_use_merges_by_pid() {
         let mut list = vec![blank(10), blank(20), blank(30)];
-        merge_gpu(&mut list, &[(20, 42.5, 1024), (99, 1.0, 1)]);
+        merge_gpu(
+            &mut list,
+            &[(20, Some(42.5), Some(1024)), (99, Some(1.0), Some(1))],
+        );
         assert_eq!(list[0].gpu_pct, None);
         assert_eq!(list[0].vram, None);
         assert_eq!(list[1].gpu_pct, Some(42.5));
