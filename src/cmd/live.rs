@@ -204,14 +204,14 @@ fn wait_keys(d: Duration) -> Vec<u8> {
 
 /// The account names by uid, read once from the running processes' accounts.
 #[cfg(windows)]
-fn user_names(_root: &Root) -> HashMap<u32, String> {
+pub(crate) fn user_names(_root: &Root) -> HashMap<u32, String> {
     aether::sys::windows::users::names()
 }
 
 /// The user names by uid, read once from the password file. A missing file gives none, and a
 /// uid with no name is shown as the number.
 #[cfg(not(windows))]
-fn user_names(root: &Root) -> HashMap<u32, String> {
+pub(crate) fn user_names(root: &Root) -> HashMap<u32, String> {
     let mut names = HashMap::new();
     if let Ok(text) = std::fs::read_to_string(root.path("etc/passwd")) {
         for line in text.lines() {
@@ -267,35 +267,35 @@ fn screen_size() -> Option<(usize, usize)> {
 }
 
 #[cfg(target_os = "linux")]
-fn catch_stops() {
+pub(crate) fn catch_stops() {
     aether::sys::linux::calls::catch_stops();
 }
 
 #[cfg(windows)]
-fn catch_stops() {
+pub(crate) fn catch_stops() {
     aether::sys::windows::calls::catch_stops();
 }
 
 #[cfg(not(any(target_os = "linux", windows)))]
-fn catch_stops() {}
+pub(crate) fn catch_stops() {}
 
 #[cfg(target_os = "linux")]
-fn stop_requested() -> bool {
+pub(crate) fn stop_requested() -> bool {
     aether::sys::linux::calls::stop_requested()
 }
 
 #[cfg(windows)]
-fn stop_requested() -> bool {
+pub(crate) fn stop_requested() -> bool {
     aether::sys::windows::calls::stop_requested()
 }
 
 #[cfg(not(any(target_os = "linux", windows)))]
-fn stop_requested() -> bool {
+pub(crate) fn stop_requested() -> bool {
     false
 }
 
 /// Sleeps for `d` in slices of 50 ms, and returns early when a stop has come.
-fn wait(d: Duration) {
+pub(crate) fn wait(d: Duration) {
     let slice = Duration::from_millis(50);
     let mut left = d;
     while !stop_requested() && !left.is_zero() {
@@ -336,7 +336,7 @@ pub(crate) fn finish(result: io::Result<()>) -> ExitCode {
 }
 
 /// Every source, opened once; each tick reads them in place.
-struct Sources {
+pub(crate) struct Sources {
     cpu: Cpu,
     mem: Mem,
     gpus: Gpus,
@@ -349,7 +349,7 @@ struct Sources {
 }
 
 impl Sources {
-    fn open(root: &Root) -> Sources {
+    pub(crate) fn open(root: &Root) -> Sources {
         Sources {
             cpu: Cpu::open(root),
             mem: Mem::open(root),
@@ -365,7 +365,7 @@ impl Sources {
 
     /// Fills `r` from one read of every source. The buffers of `r` are reused.
     /// Only the parts `--only` names are read: a part that is not shown costs nothing.
-    fn fill(&mut self, r: &mut Reading, started: Instant, view: &View) {
+    pub(crate) fn fill(&mut self, r: &mut Reading, started: Instant, view: &View) {
         r.t = started.elapsed().as_secs_f64();
         if view.shows("cpu") {
             r.cpu.clone_from(self.cpu.read());

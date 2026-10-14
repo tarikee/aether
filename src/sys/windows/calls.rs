@@ -24,13 +24,15 @@ use windows_sys::Wdk::System::Threading::{
 };
 use windows_sys::Win32::Foundation::{
     CloseHandle, GetLastError, BOOL, ERROR_ACCESS_DENIED, ERROR_BUFFER_OVERFLOW, FILETIME, HANDLE,
-    HWND, INVALID_HANDLE_VALUE, LPARAM, LUID, NO_ERROR, STATUS_INFO_LENGTH_MISMATCH,
+    HWND, INVALID_HANDLE_VALUE, LPARAM, LUID, NO_ERROR, STATUS_INFO_LENGTH_MISMATCH, SYSTEMTIME,
     UNICODE_STRING, WAIT_OBJECT_0,
 };
 use windows_sys::Win32::NetworkManagement::IpHelper::{
-    FreeMibTable, GetAdaptersAddresses, GetIfEntry2, GetIfTable2, GAA_FLAG_SKIP_ANYCAST,
-    GAA_FLAG_SKIP_DNS_SERVER, GAA_FLAG_SKIP_MULTICAST, IF_TYPE_SOFTWARE_LOOPBACK,
-    IP_ADAPTER_ADDRESSES_LH, MIB_IF_ROW2, MIB_IF_TABLE2,
+    FreeMibTable, GetAdaptersAddresses, GetExtendedTcpTable, GetExtendedUdpTable, GetIfEntry2,
+    GetIfTable2, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_DNS_SERVER, GAA_FLAG_SKIP_MULTICAST,
+    IF_TYPE_SOFTWARE_LOOPBACK, IP_ADAPTER_ADDRESSES_LH, MIB_IF_ROW2, MIB_IF_TABLE2,
+    MIB_TCP6ROW_OWNER_PID, MIB_TCPROW_OWNER_PID, MIB_UDP6ROW_OWNER_PID, MIB_UDPROW_OWNER_PID,
+    TCP_TABLE_OWNER_PID_ALL, UDP_TABLE_OWNER_PID,
 };
 use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_INET6, AF_UNSPEC, SOCKADDR};
 use windows_sys::Win32::Security::{
@@ -59,7 +61,7 @@ use windows_sys::Win32::System::Power::{
 };
 use windows_sys::Win32::System::ProcessStatus::{GetPerformanceInfo, PERFORMANCE_INFORMATION};
 use windows_sys::Win32::System::SystemInformation::{
-    GetSystemInfo, GetSystemTimeAsFileTime, GetTickCount64, SYSTEM_INFO,
+    GetLocalTime, GetSystemInfo, GetSystemTimeAsFileTime, GetTickCount64, SYSTEM_INFO,
 };
 use windows_sys::Win32::System::Threading::{
     GetActiveProcessorCount, GetProcessTimes, GetSystemTimes, OpenProcess, OpenProcessToken,
@@ -816,6 +818,138 @@ pub fn power_status() -> Option<(u8, u8, u8, u32)> {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Sockets
+
+/// One row of the TCP or UDP table, as the system gives it.
+pub struct RawSocket {
+    pub udp: bool,
+    pub local: IpAddr,
+    pub port: u16,
+    pub remote: IpAddr,
+    pub remote_port: u16,
+    /// The TCP state (1 closed ... 12 delete), 0 for UDP.
+    pub state: u32,
+    pub pid: u32,
+}
+
+/// The port of a table row: network byte order in the low 16 bits.
+fn row_port(v: u32) -> u16 {
+    u16::from_be(v as u16)
+}
+
+/// The system's own table of one kind, in a buffer of 8-byte units (so rows are aligned).
+fn extended_table(udp: bool, v6: bool) -> Option<Vec<u64>> {
+    let family = u32::from(if v6 { AF_INET6 } else { AF_INET });
+    let mut size = 0u32;
+    let mut buf: Vec<u64> = Vec::new();
+    for _ in 0..8 {
+        let ptr = if size == 0 {
+            null_mut()
+        } else {
+            buf.as_mut_ptr().cast()
+        };
+        // SAFETY: the buffer holds at least `size` bytes, or is null with size 0 to ask for it.
+        let rc = unsafe {
+            if udp {
+                GetExtendedUdpTable(ptr, &mut size, 0, family, UDP_TABLE_OWNER_PID, 0)
+            } else {
+                GetExtendedTcpTable(ptr, &mut size, 0, family, TCP_TABLE_OWNER_PID_ALL, 0)
+            }
+        };
+        if rc == NO_ERROR {
+            return Some(buf);
+        }
+        // 122: the buffer is too small, and `size` says how much.
+        if rc != 122 {
+            return None;
+        }
+        buf = vec![0u64; (size as usize).div_ceil(8) + 8];
+        size = (buf.len() * 8) as u32;
+    }
+    None
+}
+
+/// Every TCP and UDP socket with its owning pid, v4 and v6.
+pub fn sockets(out: &mut Vec<RawSocket>) -> bool {
+    out.clear();
+    let mut ok = false;
+    for udp in [false, true] {
+        for v6 in [false, true] {
+            let Some(buf) = extended_table(udp, v6) else {
+                continue;
+            };
+            ok = true;
+            let base = buf.as_ptr();
+            // SAFETY: the table starts with its row count, then that many rows of one type,
+            // all inside the buffer the system filled.
+            unsafe {
+                let n = *base.cast::<u32>() as usize;
+                let rows = base.cast::<u8>().add(4);
+                match (udp, v6) {
+                    (false, false) => {
+                        let r = std::slice::from_raw_parts(rows.cast::<MIB_TCPROW_OWNER_PID>(), n);
+                        for r in r {
+                            out.push(RawSocket {
+                                udp,
+                                local: IpAddr::V4(Ipv4Addr::from(u32::from_be(r.dwLocalAddr))),
+                                port: row_port(r.dwLocalPort),
+                                remote: IpAddr::V4(Ipv4Addr::from(u32::from_be(r.dwRemoteAddr))),
+                                remote_port: row_port(r.dwRemotePort),
+                                state: r.dwState,
+                                pid: r.dwOwningPid,
+                            });
+                        }
+                    }
+                    (false, true) => {
+                        let r = std::slice::from_raw_parts(rows.cast::<MIB_TCP6ROW_OWNER_PID>(), n);
+                        for r in r {
+                            out.push(RawSocket {
+                                udp,
+                                local: IpAddr::V6(Ipv6Addr::from(r.ucLocalAddr)),
+                                port: row_port(r.dwLocalPort),
+                                remote: IpAddr::V6(Ipv6Addr::from(r.ucRemoteAddr)),
+                                remote_port: row_port(r.dwRemotePort),
+                                state: r.dwState,
+                                pid: r.dwOwningPid,
+                            });
+                        }
+                    }
+                    (true, false) => {
+                        let r = std::slice::from_raw_parts(rows.cast::<MIB_UDPROW_OWNER_PID>(), n);
+                        for r in r {
+                            out.push(RawSocket {
+                                udp,
+                                local: IpAddr::V4(Ipv4Addr::from(u32::from_be(r.dwLocalAddr))),
+                                port: row_port(r.dwLocalPort),
+                                remote: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                                remote_port: 0,
+                                state: 0,
+                                pid: r.dwOwningPid,
+                            });
+                        }
+                    }
+                    (true, true) => {
+                        let r = std::slice::from_raw_parts(rows.cast::<MIB_UDP6ROW_OWNER_PID>(), n);
+                        for r in r {
+                            out.push(RawSocket {
+                                udp,
+                                local: IpAddr::V6(Ipv6Addr::from(r.ucLocalAddr)),
+                                port: row_port(r.dwLocalPort),
+                                remote: IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+                                remote_port: 0,
+                                state: 0,
+                                pid: r.dwOwningPid,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    ok
+}
+
+// ---------------------------------------------------------------------------------------------
 // Graphics adapters, through the kernel's graphics statistics (what Task Manager reads)
 
 /// One graphics adapter.
@@ -984,6 +1118,21 @@ pub fn catch_stops() {
         // SAFETY: a handler that only touches atomics and the console mode.
         unsafe { SetConsoleCtrlHandler(Some(on_ctrl), 1) };
     }
+}
+
+/// The local time of day as (hour, minute, second).
+pub fn local_hms() -> Option<(u32, u32, u32)> {
+    // SAFETY: GetLocalTime fills the zeroed struct it is given.
+    let t: SYSTEMTIME = unsafe {
+        let mut t: SYSTEMTIME = zeroed();
+        GetLocalTime(&mut t);
+        t
+    };
+    Some((
+        u32::from(t.wHour),
+        u32::from(t.wMinute),
+        u32::from(t.wSecond),
+    ))
 }
 
 /// Whether Ctrl-C (or the console closing) has asked the program to stop.
