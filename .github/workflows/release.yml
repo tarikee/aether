@@ -1,0 +1,79 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+    branches: [release]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: aether-linux-x86_64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            ext: tar.gz
+          - name: aether-windows-x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            ext: zip
+          - name: aether-macos-arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+            ext: tar.gz
+          - name: aether-macos-x86_64
+            os: macos-latest
+            target: x86_64-apple-darwin
+            ext: tar.gz
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install musl tools
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+      - name: Pack (tar.gz)
+        if: matrix.ext == 'tar.gz'
+        shell: bash
+        run: |
+          mkdir "${{ matrix.name }}"
+          cp "target/${{ matrix.target }}/release/aether" LICENSE README.md "${{ matrix.name }}/"
+          tar -czf "${{ matrix.name }}.tar.gz" "${{ matrix.name }}"
+      - name: Pack (zip)
+        if: matrix.ext == 'zip'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory "${{ matrix.name }}" | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/aether.exe", LICENSE, README.md "${{ matrix.name }}/"
+          Compress-Archive -Path "${{ matrix.name }}/*" -DestinationPath "${{ matrix.name }}.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: ${{ matrix.name }}.${{ matrix.ext }}
+          if-no-files-found: error
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum aether-* > SHA256SUMS
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" dist/* --repo "${{ github.repository }}" --title "${{ github.ref_name }}" --generate-notes
