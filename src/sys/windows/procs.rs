@@ -5,7 +5,7 @@
 //! the disk alone. GPU use per process is not read: `None`.
 
 use super::{calls, users};
-use crate::sys::{EndError, Proc, ProcDetail, Root};
+use crate::sys::{EndError, Proc, ProcDetail, Root, Thread};
 use std::collections::HashMap;
 use std::time::Instant;
 
@@ -145,6 +145,23 @@ pub fn command_line(_root: &Root, pid: u32) -> Option<String> {
         line.truncate(cut);
     }
     Some(line.trim_end().to_string())
+}
+
+/// The threads of one process, from a thread snapshot filtered by its pid. Windows gives no
+/// thread names here, so a name is `None`; a thread whose CPU cannot be read has no CPU time.
+pub fn thread_list(_root: &Root, pid: u32) -> Option<Vec<Thread>> {
+    let found = calls::thread_times(pid)?;
+    Some(
+        found
+            .into_iter()
+            .map(|(tid, cpu_s)| Thread {
+                tid,
+                name: None,
+                state: None,
+                cpu_s,
+            })
+            .collect(),
+    )
 }
 
 /// One process in full. The folder it works in is in its own memory, which needs more rights

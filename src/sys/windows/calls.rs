@@ -53,6 +53,9 @@ use windows_sys::Win32::System::Console::{
 use windows_sys::Win32::System::Diagnostics::Debug::{
     SetErrorMode, SEM_FAILCRITICALERRORS, SEM_NOOPENFILEERRORBOX,
 };
+use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+};
 use windows_sys::Win32::System::Ioctl::{
     DISK_PERFORMANCE, IOCTL_DISK_PERFORMANCE, VOLUME_DISK_EXTENTS,
 };
@@ -64,9 +67,11 @@ use windows_sys::Win32::System::SystemInformation::{
     GetLocalTime, GetSystemInfo, GetSystemTimeAsFileTime, GetTickCount64, SYSTEM_INFO,
 };
 use windows_sys::Win32::System::Threading::{
-    GetActiveProcessorCount, GetProcessTimes, GetSystemTimes, OpenProcess, OpenProcessToken,
-    QueryFullProcessImageNameW, TerminateProcess, WaitForSingleObject, ALL_PROCESSOR_GROUPS,
-    PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+    GetActiveProcessorCount, GetProcessTimes, GetSystemTimes, GetThreadTimes, OpenProcess,
+    OpenProcessToken, OpenThread, QueryFullProcessImageNameW, TerminateProcess,
+    WaitForSingleObject, ALL_PROCESSOR_GROUPS, PROCESS_NAME_WIN32,
+    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+    THREAD_QUERY_LIMITED_INFORMATION,
 };
 use windows_sys::Win32::System::WindowsProgramming::{
     SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION, SYSTEM_PROCESS_INFORMATION, SYSTEM_THREAD_INFORMATION,
@@ -510,6 +515,38 @@ pub fn cpu_seconds(pid: u32) -> Option<f64> {
     // SAFETY: a valid handle and four valid out pointers.
     let ok =
         unsafe { GetProcessTimes(process.0, &mut created, &mut exited, &mut kernel, &mut user) };
+    (ok != 0).then(|| (filetime(kernel) + filetime(user)) as f64 / 1e7)
+}
+
+/// The threads of a process, each with its CPU seconds (`None` where its times cannot be read,
+/// as for a thread of another account). None when the thread snapshot itself fails.
+pub fn thread_times(pid: u32) -> Option<Vec<(u32, Option<f64>)>> {
+    // SAFETY: no pointers; a failed snapshot gives a null handle.
+    let snap = owned(unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) })?;
+    // SAFETY: an all-zero THREADENTRY32 is valid; its size is set before any call takes it.
+    let mut entry: THREADENTRY32 = unsafe { zeroed() };
+    entry.dwSize = size_of::<THREADENTRY32>() as u32;
+    // SAFETY: a valid snapshot handle and a valid entry with its size set.
+    let mut more = unsafe { Thread32First(snap.0, &mut entry) } != 0;
+    let mut out = Vec::new();
+    while more {
+        if entry.th32OwnerProcessID == pid {
+            out.push((entry.th32ThreadID, thread_seconds(entry.th32ThreadID)));
+        }
+        // SAFETY: the same snapshot and entry as above.
+        more = unsafe { Thread32Next(snap.0, &mut entry) } != 0;
+    }
+    Some(out)
+}
+
+/// The CPU seconds of one thread: kernel plus user time.
+fn thread_seconds(tid: u32) -> Option<f64> {
+    // SAFETY: no pointers; a failed open gives a null handle.
+    let thread = owned(unsafe { OpenThread(THREAD_QUERY_LIMITED_INFORMATION, 0, tid) })?;
+    let (mut created, mut exited, mut kernel, mut user) =
+        (ZERO_TIME, ZERO_TIME, ZERO_TIME, ZERO_TIME);
+    // SAFETY: a valid handle and four valid out pointers.
+    let ok = unsafe { GetThreadTimes(thread.0, &mut created, &mut exited, &mut kernel, &mut user) };
     (ok != 0).then(|| (filetime(kernel) + filetime(user)) as f64 / 1e7)
 }
 
