@@ -95,8 +95,15 @@ pub fn run(parsed: &Parsed) -> ExitCode {
     };
     let keys_on = mode.keys;
     let mut out = io::stdout().lock();
+    // A `--disk` mount or `--net` interface that the first reading does not have ends the run.
+    let missing = std::cell::RefCell::new(None::<String>);
     let result = frames(
-        |r| sources.fill(r, started, &parsed.view),
+        |r| {
+            sources.fill(r, started, &parsed.view);
+            if missing.borrow().is_none() {
+                *missing.borrow_mut() = crate::cli::missing_name(&parsed.view, r);
+            }
+        },
         &mut out,
         parsed,
         mode,
@@ -109,8 +116,14 @@ pub fn run(parsed: &Parsed) -> ExitCode {
             }
         },
         screen_size,
-        stop_requested,
+        || stop_requested() || missing.borrow().is_some(),
     );
+    if let Some(m) = missing.into_inner() {
+        drop(out);
+        drop(_restore);
+        eprintln!("aether: {m}");
+        return ExitCode::from(2);
+    }
     // A full-screen write that fails means the terminal has gone: there is no one left to tell.
     let result = if full { result.or(Ok(())) } else { result };
     finish(result)

@@ -110,6 +110,48 @@ fn named(list: &Option<Vec<String>>, name: &str) -> bool {
     }
 }
 
+/// The parts `--only` takes.
+pub const PARTS: &[&str] = &[
+    "cpu", "mem", "gpu", "sensors", "disk", "net", "battery", "host", "procs",
+];
+
+/// The names of what a reading has, for a message: `a, b`, or `none`.
+fn there(have: &[&str]) -> String {
+    if have.is_empty() {
+        "none".to_string()
+    } else {
+        have.join(", ")
+    }
+}
+
+/// The line for a mount that the reading does not have.
+pub fn missing_mount(name: &str, r: &aether::Reading) -> String {
+    let have: Vec<&str> = r.disks.iter().map(|d| d.mount.as_str()).collect();
+    format!("no mount \"{name}\"; there are: {}", there(&have))
+}
+
+/// The line for the first `--disk` mount or `--net` interface the reading does not have.
+pub fn missing_name(view: &View, r: &aether::Reading) -> Option<String> {
+    if let Some(list) = &view.disks {
+        if let Some(name) = list
+            .iter()
+            .find(|n| !r.disks.iter().any(|d| &d.mount == *n))
+        {
+            return Some(missing_mount(name, r));
+        }
+    }
+    if let Some(list) = &view.nets {
+        if let Some(name) = list.iter().find(|n| !r.nets.iter().any(|x| &x.name == *n)) {
+            let have: Vec<&str> = r.nets.iter().map(|x| x.name.as_str()).collect();
+            return Some(format!(
+                "no interface \"{name}\"; there are: {}",
+                there(&have)
+            ));
+        }
+    }
+    None
+}
+
 /// The parsed command line.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Parsed {
@@ -367,6 +409,12 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
             }
             "--only" => {
                 let list = value(&mut it, a)?;
+                if let Some(bad) = list.split(',').find(|s| !PARTS.contains(s)) {
+                    return Err(format!(
+                        "no part \"{bad}\"; there are: {}",
+                        PARTS.join(", ")
+                    ));
+                }
                 p.view.only = Some(list.split(',').map(str::to_string).collect());
             }
             _ if a.starts_with('-') && a.len() > 1 => return Err(format!("unknown option {a}")),
@@ -546,6 +594,28 @@ mod tests {
         assert!(parse(&args("--by disk2")).is_err());
         assert!(parse(&args("-i 0")).is_err());
         assert!(parse(&args("--nope")).is_err());
+    }
+
+    #[test]
+    fn unknown_parts_and_mounts_are_named() {
+        let err = parse(&args("--only cpu,nope")).unwrap_err();
+        assert!(
+            err.contains("no part \"nope\"; there are: cpu, mem"),
+            "{err}"
+        );
+        assert!(parse(&args("--only cpu,mem,net,procs")).is_ok());
+        let view = parse(&args("--disk /x")).unwrap().view;
+        let empty = aether::Reading::default();
+        assert_eq!(
+            missing_name(&view, &empty).as_deref(),
+            Some("no mount \"/x\"; there are: none")
+        );
+        let net = parse(&args("--net nope")).unwrap().view;
+        assert_eq!(
+            missing_name(&net, &empty).as_deref(),
+            Some("no interface \"nope\"; there are: none")
+        );
+        assert!(missing_name(&parse(&args("--once")).unwrap().view, &empty).is_none());
     }
 
     #[test]

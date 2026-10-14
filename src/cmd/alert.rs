@@ -263,6 +263,14 @@ pub fn run(parsed: &Parsed) -> ExitCode {
     let mut sources = Sources::open(&root);
     let mut r = Reading::default();
     sources.fill(&mut r, started, &view);
+    for rule in &rules {
+        if let Key::Disk(m) = &rule.key {
+            if !r.disks.iter().any(|d| &d.mount == m) {
+                eprintln!("aether: {}", crate::cli::missing_mount(m, &r));
+                return ExitCode::from(2);
+            }
+        }
+    }
     if parsed.once {
         wait(if parsed.interval_given {
             Duration::from_secs_f64(parsed.interval_s)
