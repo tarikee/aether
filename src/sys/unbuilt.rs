@@ -3,7 +3,7 @@
 
 use super::{
     BatterySample, Built, CpuSample, DiskSample, EndError, GpuSample, HostSample, MemSample,
-    NetSample, Proc, ProcDetail, Root, Sensor,
+    NetSample, Proc, ProcDetail, Root, Sensor, Thread,
 };
 use std::path::Path;
 
@@ -38,6 +38,11 @@ pub fn command_line(_root: &Root, _pid: u32) -> Option<String> {
 }
 
 pub fn detail(_root: &Root, _pid: u32) -> Option<ProcDetail> {
+    None
+}
+
+/// The threads of a process: none on the OSes not built yet.
+pub fn thread_list(_root: &Root, _pid: u32) -> Option<Vec<Thread>> {
     None
 }
 

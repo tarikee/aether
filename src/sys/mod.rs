@@ -207,3 +207,103 @@ pub struct ProcDetail {
     pub cpu_s: f64,
     pub open_files: Option<u32>,
 }
+
+/// One thread of a process: its CPU time so far and its state, read on each look. A name or a
+/// state the OS does not give is `None`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Thread {
+    pub tid: u32,
+    pub name: Option<String>,
+    pub state: Option<u8>,
+    pub cpu_s: Option<f64>,
+}
+
+/// A thread with its CPU % over the time since the last look; `None` on the first look, or
+/// where a CPU time is missing.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ThreadRow {
+    pub thread: Thread,
+    pub cpu_pct: Option<f32>,
+}
+
+/// Pairs each thread of `now` with its CPU % over the `secs` since the look `prev`, most CPU
+/// first (no % last), then by TID. A thread not in `prev` has no %.
+pub fn thread_rows(prev: &[Thread], now: &[Thread], secs: f64) -> Vec<ThreadRow> {
+    let before: std::collections::HashMap<u32, f64> = prev
+        .iter()
+        .filter_map(|t| Some((t.tid, t.cpu_s?)))
+        .collect();
+    let mut rows: Vec<ThreadRow> = now
+        .iter()
+        .map(|t| {
+            let cpu_pct = match (before.get(&t.tid), t.cpu_s) {
+                (Some(&a), Some(b)) if secs > 0.0 && b >= a => {
+                    Some(((b - a) / secs * 100.0) as f32)
+                }
+                _ => None,
+            };
+            ThreadRow {
+                thread: t.clone(),
+                cpu_pct,
+            }
+        })
+        .collect();
+    rows.sort_by(|a, b| {
+        let by_cpu = match (a.cpu_pct, b.cpu_pct) {
+            (Some(x), Some(y)) => y.total_cmp(&x),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        };
+        by_cpu.then(a.thread.tid.cmp(&b.thread.tid))
+    });
+    rows
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod thread_tests {
+    use super::*;
+
+    fn t(tid: u32, cpu_s: Option<f64>) -> Thread {
+        Thread {
+            tid,
+            name: None,
+            state: None,
+            cpu_s,
+        }
+    }
+
+    #[test]
+    fn cpu_percent_is_the_change_over_the_seconds_between_looks() {
+        let before = [t(1, Some(1.0)), t(2, Some(4.0)), t(3, None)];
+        let now = [
+            t(1, Some(1.5)),
+            t(2, Some(4.0)),
+            t(3, Some(9.0)),
+            t(4, Some(2.0)),
+        ];
+        let rows = thread_rows(&before, &now, 2.0);
+        let pct = |tid: u32| rows.iter().find(|r| r.thread.tid == tid).unwrap().cpu_pct;
+        assert_eq!(pct(1), Some(25.0));
+        assert_eq!(pct(2), Some(0.0));
+        assert_eq!(pct(3), None);
+        assert_eq!(pct(4), None);
+    }
+
+    #[test]
+    fn the_first_look_has_no_percent_and_the_busiest_thread_comes_first() {
+        let now = [t(5, Some(0.5)), t(6, Some(3.0)), t(2, None)];
+        let rows = thread_rows(&[], &now, 1.0);
+        assert!(rows.iter().all(|r| r.cpu_pct.is_none()));
+        let order: Vec<u32> = rows.iter().map(|r| r.thread.tid).collect();
+        assert_eq!(order, vec![2, 5, 6]);
+        let before = [t(5, Some(0.0)), t(6, Some(1.0))];
+        let now = [t(5, Some(2.0)), t(6, Some(1.5)), t(2, None)];
+        let order: Vec<u32> = thread_rows(&before, &now, 1.0)
+            .iter()
+            .map(|r| r.thread.tid)
+            .collect();
+        assert_eq!(order, vec![5, 6, 2]);
+    }
+}
