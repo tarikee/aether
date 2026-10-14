@@ -11,9 +11,20 @@ The values in the picture are made up.
 
 ## Install
 
-Every release on the [releases page](https://github.com/tarikee/aether/releases) has ready
-programs: download the archive for your system, unpack it and run `aether`. Each holds the program, `LICENSE` and
-`README.md`; `SHA256SUMS` lists their checksums.
+One line downloads the latest release for your system, checks it against `SHA256SUMS` and puts
+it on your `PATH`, so typing `aether` starts it. Run it again to update.
+
+Linux and macOS (installs to `/usr/local/bin`, asking for sudo only if needed):
+
+    curl -fsSL https://raw.githubusercontent.com/tarikee/aether/main/install.sh | sh
+
+Windows, in PowerShell (installs to `%LOCALAPPDATA%\Programs\aether` and adds it to your `PATH`):
+
+    irm https://raw.githubusercontent.com/tarikee/aether/main/install.ps1 | iex
+
+Or download it yourself from the [releases page](https://github.com/tarikee/aether/releases):
+unpack the archive for your system and run `aether`. Each archive holds the program, `LICENSE`
+and `README.md`; `SHA256SUMS` lists their checksums.
 
 - `aether-linux-x86_64.tar.gz`: static, runs on any x86_64 Linux
 - `aether-linux-arm64.tar.gz`: static, runs on any 64-bit ARM Linux (Raspberry Pi 3 and later)

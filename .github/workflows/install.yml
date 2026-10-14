@@ -1,0 +1,37 @@
+name: install
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: The release to install (a tag such as v0.1.1, or latest)
+        default: latest
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        default: latest
+
+jobs:
+  install:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Install with the one line from the README
+        if: runner.os != 'Windows'
+        env:
+          AETHER_VERSION: ${{ inputs.version }}
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/install.sh | sh
+          aether version
+      - name: Install with the one line from the README
+        if: runner.os == 'Windows'
+        shell: powershell
+        env:
+          AETHER_VERSION: ${{ inputs.version }}
+        run: |
+          irm https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/install.ps1 | iex
+          aether version
