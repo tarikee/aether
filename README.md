@@ -5,7 +5,7 @@ process with what it uses. In a terminal it draws a full-screen view; piped, it 
 
 It is a Rust library (the core) with a small command-line program on top. Licence GPL-3.0-only.
 
-<img src="assets/view.svg" alt="The aether view in a 100 by 30 terminal: the CPU with its history and threads, memory, a GPU, disks and network side by side, sensors, and the process table sorted by CPU." width="880">
+<img src="assets/view.svg" alt="The aether view in a 160 by 45 terminal: the CPU with its graph and a bar per thread, memory and a GPU with their graphs, disks, network and sensors side by side, and the process table sorted by CPU, each in its own box." width="880">
 
 The values in the picture are made up.
 
@@ -28,13 +28,19 @@ Or build without installing: `cargo build --release`, then `target/release/aethe
 - GPUs: use, VRAM, temperature, fan speed, power.
 - Every sensor: temperatures, fans and power, with names.
 - Disks: space used, busy time, and read and write rates, per mount.
-- Network: receive and send rates per interface, with a history line.
+- Network: receive and send rates per interface, with a graph of each.
 - Battery, on a laptop, and uptime.
 - Every process: CPU %, memory, GPU % and VRAM, disk read and write rates, threads, user and age.
   Processes are grouped by app by default.
 
 The full-screen view is shown when the output is a terminal, and not with `--once`, `--json` or
-`--plain`. It needs a UTF-8 locale and at least 60 columns and 15 rows.
+`--plain`. It needs a UTF-8 locale and at least 60 columns and 15 rows. It fills the terminal: each
+part in its own box, bars that stretch to their line, graphs of the last readings (CPU, memory,
+the first GPU, the first interface), a bar per CPU thread (a cell each when there are too many),
+and the process table down to the last row. From 140 columns the CPU sits beside memory and the
+GPUs, and disks, network and sensors share a row; from 100, memory sits beside the GPU and disks
+beside network; below that, one box per row. A short terminal gives up graph rows, then the
+sensors, then the thread bars, so the process table keeps 8 rows (5 under 30 rows).
 
 ## The view's keys
 

@@ -1,11 +1,11 @@
-//! The history lines of the full-screen view: fixed rings of the last readings (CPU, and the
-//! first interface's down and up rates). A push overwrites the oldest value, so nothing is
-//! allocated per tick.
+//! The graphs of the full-screen view: fixed rings of the last readings (CPU, memory used, the
+//! first GPU's use, and the first interface's down and up rates). A push overwrites the oldest
+//! value, so nothing is allocated per tick.
 
 use aether::Reading;
 
 /// The readings a ring keeps.
-pub const SAMPLES: usize = 120;
+pub const SAMPLES: usize = 300;
 
 /// The last `SAMPLES` values of one number; `None` where a reading had none.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -49,6 +49,10 @@ impl Ring {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct History {
     pub cpu: Ring,
+    /// Memory used, in percent of the total.
+    pub mem: Ring,
+    /// The first GPU's use, in percent.
+    pub gpu: Ring,
     pub down: Ring,
     pub up: Ring,
 }
@@ -56,6 +60,10 @@ pub struct History {
 impl History {
     pub fn push(&mut self, r: &Reading) {
         self.cpu.push(r.cpu.pct);
+        let m = &r.mem;
+        self.mem
+            .push((m.total > 0).then(|| (m.used as f64 / m.total as f64 * 100.0) as f32));
+        self.gpu.push(r.gpus.first().and_then(|g| g.pct));
         let first = r.nets.first();
         self.down
             .push(first.and_then(|n| n.rx_bps).map(|b| b as f32));
@@ -94,5 +102,19 @@ mod tests {
         ring.push(Some(2.0));
         let all: Vec<Option<f32>> = ring.newest(10).collect();
         assert_eq!(all, [None, Some(2.0)]);
+    }
+
+    #[test]
+    fn memory_is_kept_as_a_share_and_a_missing_gpu_as_none() {
+        let mut r = Reading::default();
+        r.mem.total = 1000;
+        r.mem.used = 250;
+        let mut h = History::default();
+        h.push(&r);
+        assert_eq!(h.mem.newest(1).next(), Some(Some(25.0)));
+        assert_eq!(h.gpu.newest(1).next(), Some(None));
+        r.mem.total = 0;
+        h.push(&r);
+        assert_eq!(h.mem.newest(1).next(), Some(None));
     }
 }
