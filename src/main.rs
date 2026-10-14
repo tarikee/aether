@@ -18,6 +18,7 @@ const COMMANDS: &[(&str, Run)] = &[
     ("live", cmd::live::run),
     ("proc", cmd::proc::run),
     ("kill", cmd::kill::run),
+    ("port", cmd::port::run),
     ("check", cmd::check::run),
     ("version", cli::version),
     ("help", cli::help),

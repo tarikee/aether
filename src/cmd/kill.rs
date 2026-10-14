@@ -85,7 +85,30 @@ pub fn run(parsed: &Parsed) -> ExitCode {
     };
     let root = Root::system();
     let me = std::process::id();
+    let on_port = target.starts_with(':');
     let picks: Vec<(u32, String)> = match target.parse::<u32>() {
+        Err(_) if on_port => {
+            let Some(port) = crate::cmd::port::parse_port(target) else {
+                eprintln!("aether: {target} is not a port");
+                return ExitCode::from(2);
+            };
+            let mut found = match crate::cmd::port::listeners(&root, port) {
+                Ok(found) => found,
+                Err(message) => {
+                    eprintln!("aether: {message}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            found.retain(|(pid, _)| !refused(*pid, me));
+            if found.is_empty() {
+                eprintln!("aether: refused: the listener is init or aether itself");
+                return ExitCode::FAILURE;
+            }
+            if found.len() > 1 && !confirm(&found, parsed.yes) {
+                return ExitCode::FAILURE;
+            }
+            found
+        }
         Ok(pid) => {
             if refused(pid, me) {
                 eprintln!("aether: refused: pid {pid} is init or aether itself");

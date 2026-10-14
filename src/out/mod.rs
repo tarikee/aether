@@ -2,6 +2,7 @@
 
 pub mod history;
 pub mod json;
+pub mod ports;
 pub mod screen;
 pub mod text;
 pub mod tree;

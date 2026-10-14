@@ -65,6 +65,39 @@ pub fn write(reading: &Reading, view: &View, out: &mut Vec<u8>) {
     put(out, "\n");
 }
 
+/// The rows of `aether port` as one object; `hidden` says some process could not be seen.
+pub fn write_ports(rows: &[crate::out::ports::PortRow], hidden: bool, out: &mut Vec<u8>) {
+    let mut o = Obj::open(out);
+    o.key("sockets");
+    array(o.out, rows, |out, r| {
+        let mut o = Obj::open(out);
+        o.text("proto", r.proto);
+        o.text("ip", r.ip);
+        o.text("local", &r.local);
+        o.int("port", Some(u64::from(r.port)));
+        o.key("remote");
+        match &r.remote {
+            Some(a) => string(o.out, a),
+            None => put(o.out, "null"),
+        }
+        o.int("remote_port", r.remote_port.map(u64::from));
+        o.text("state", r.state);
+        o.int("pid", r.pid.map(u64::from));
+        for (k, v) in [("process", &r.name), ("user", &r.user)] {
+            o.key(k);
+            match v {
+                Some(t) => string(o.out, t),
+                None => put(o.out, "null"),
+            }
+        }
+        o.close();
+    });
+    o.key("hidden");
+    put(o.out, if hidden { "true" } else { "false" });
+    o.close();
+    put(out, "\n");
+}
+
 /// Writes raw text into the buffer.
 fn put(out: &mut Vec<u8>, s: &str) {
     out.extend_from_slice(s.as_bytes());

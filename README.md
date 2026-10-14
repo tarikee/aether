@@ -72,12 +72,16 @@ Usage:
       live: every vital and every process, rewritten in place
   aether --once [same options]
       one reading, then exit
-  aether proc PID|NAME
+  aether port [PORT] [--all] [--json]
+      the listening sockets: protocol, address, port, pid, process, user, sorted by port.
+      PORT shows who holds that port, listening or connected; --all adds connections.
+      A process that cannot be seen shows a dash (root shows it).
+  aether proc PID|NAME|:PORT
       one process in full: command line, program, folder, parents, CPU time, open files
-  aether kill PID|NAME [--force] [-y] [-s NAME|NUMBER]
+  aether kill PID|NAME|:PORT [--force] [-y] [-s NAME|NUMBER]
       asks the process to stop and waits 3 s; says if it is still there.
       --force kills it. By NAME it lists the matches and asks first; -y skips the question.
-      -s sends that one signal and does not wait.
+      -s sends that one signal and does not wait. :PORT is the process listening on it.
   aether check
       what this machine and OS offer, and what is missing
   aether version
@@ -94,7 +98,7 @@ Options:
   --filter TEXT          only processes whose name or command line contains TEXT
   --flat                 single processes, not grouped by app
   --tree                 single processes, each under its parent
-  --all                  print every row, past the screen's height
+  --all                  print every row, past the screen's height (port: every connection)
   --only LIST            only these parts, e.g. cpu,mem (default: everything)
   --disk MOUNT[,MOUNT]   only these disks, by mount point (default: every disk)
   --net NAME[,NAME]      only these network interfaces (default: every one)
