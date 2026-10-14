@@ -3,7 +3,9 @@ name = "aether"
 version = "0.1.0"
 edition = "2021"
 license = "GPL-3.0-only"
-description = "The whole machine as numbers, on every OS."
+description = "The whole machine as numbers: CPU, memory, GPUs, sensors, disks, network and every process."
+keywords = ["system", "monitor", "top", "cpu", "process"]
+categories = ["command-line-utilities", "os"]
 readme = "README.md"
 repository = "https://github.com/tarikee/aether"
 
