@@ -105,10 +105,6 @@ const RATE_W: usize = 12;
 /// ones, then DISK, VRAM and GPU.
 const NAME_MIN: usize = 16;
 const NAME_LEAST: usize = 12;
-/// The name's room before a wide screen spreads the other columns, and the most cells each of
-/// them is widened by.
-const NAME_ROOM: usize = 40;
-const SPREAD_MAX: usize = 4;
 /// The keys in the process box's bottom border, as many as fit; `? help` is always kept.
 const KEYS: [&str; 9] = [
     "q quit",
@@ -123,7 +119,6 @@ const KEYS: [&str; 9] = [
 ];
 const HELP_KEY: &str = "? help";
 const LEAVE: &str = "ctrl-c to leave";
-const EIGHTHS: [&str; 8] = [" ", "▏", "▎", "▍", "▌", "▋", "▊", "▉"];
 const LEVELS: [&str; 8] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
 const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
 const SPACES: &str = "                                                                ";
@@ -340,33 +335,27 @@ fn cut(s: &str, n: usize) -> String {
     t
 }
 
-/// Cuts a path to `n` cells in the middle, keeping its last part: `/run/me…/Data`.
+/// Cuts a name to `n` cells around an ellipsis: a head of about a third, the rest the tail.
 fn cut_middle(s: &str, n: usize) -> String {
-    let w = cells(s);
-    if w <= n {
+    if cells(s) <= n {
         return s.to_string();
     }
     if n < 3 {
         return cut(s, n);
     }
-    let tail = match s.rfind('/') {
-        Some(at) if at > 0 && cells(&s[at..]) + 2 <= n => &s[at..],
-        _ => {
-            // No short last part: the end of the text after the ellipsis.
-            let mut start = s.len();
-            let mut used = 0;
-            for (i, c) in s.char_indices().rev() {
-                if used + char_cells(c) > n - 1 {
-                    break;
-                }
-                used += char_cells(c);
-                start = i;
-            }
-            &s[start..]
+    let head_w = n / 3;
+    let tail_w = n - 1 - head_w;
+    let head = fit(s, head_w).0;
+    let mut start = s.len();
+    let mut used = 0;
+    for (i, c) in s.char_indices().rev() {
+        if used + char_cells(c) > tail_w {
+            break;
         }
-    };
-    let head = fit(s, n - 1 - cells(tail)).0;
-    format!("{head}…{tail}")
+        used += char_cells(c);
+        start = i;
+    }
+    format!("{head}…{}", &s[start..])
 }
 
 /// Draws one frame into `out`: the synchronised-output marks, the cursor home, each line ended
@@ -2118,13 +2107,10 @@ fn proc_columns(inner: usize, wide: bool, single: bool, by: Sort, _grouped: bool
             on[i] = false;
         }
     }
-    // A wide screen spreads the columns, up to four more cells each, once the name has its room.
-    let name_w = inner.saturating_sub(fixed(&on));
-    let n = on.iter().filter(|o| **o).count().max(1);
-    let extra = (name_w.saturating_sub(NAME_ROOM) / n).min(SPREAD_MAX);
+    // Each number keeps its width and two spaces; the name takes all the rest.
     Columns {
-        name_w: name_w - extra * n,
-        extra,
+        name_w: inner.saturating_sub(fixed(&on)),
+        extra: 0,
         on,
     }
 }
@@ -2416,21 +2402,20 @@ fn flex(room: usize, cw: usize) -> usize {
     }
 }
 
-/// A bar of `cells` cells: full blocks, the fraction in eighths, the rest empty and dim.
+/// A bar of `cells` cells: `━` filled, a `╸` half cell from half a cell up, the rest `╌` dim.
 fn bar(l: &mut Line, frac: f32, cells: usize, role: Role) {
     if cells == 0 {
         return;
     }
     let fill = frac.clamp(0.0, 1.0) * cells as f32;
     let full = (fill.floor() as usize).min(cells);
-    let part = ((fill - fill.floor()) * 8.0) as usize;
-    l.push(&"█".repeat(full), role);
+    l.push(&"━".repeat(full), role);
     let mut used = full;
-    if part > 0 && full < cells {
-        l.push(EIGHTHS[part.min(7)], role);
+    if fill - fill.floor() >= 0.5 && full < cells {
+        l.push("╸", role);
         used += 1;
     }
-    l.push(&"░".repeat(cells - used), Role::Dim);
+    l.push(&"╌".repeat(cells - used), Role::Dim);
 }
 
 /// A whole percentage in four cells, right-aligned: the number in `role`, the sign dim.
@@ -3017,7 +3002,7 @@ mod tests {
             let f = lines_of(&frame(&r, &view(), &screen(cols, rows, false)));
             assert_eq!(f.len(), rows);
             // No grid entry ("199 ███"), and the cells take a few rows.
-            assert!(!f.iter().any(|l| l.contains("199 █") || l.contains("199 ░")));
+            assert!(!f.iter().any(|l| l.contains("199 ━") || l.contains("199 ╌")));
             let cell_rows = f
                 .iter()
                 .filter(|l| l.chars().filter(|c| "▁▂▃▄▅▆▇█".contains(*c)).count() >= 30)
@@ -3033,14 +3018,14 @@ mod tests {
 
     #[test]
     fn a_long_name_and_a_long_mount_are_cut() {
-        assert_eq!(cut_middle("/run/media/someone/Data", 13), "/run/me…/Data");
+        assert_eq!(cut_middle("/run/media/someone/Data", 13), "/run…one/Data");
         assert_eq!(cut_middle("/data", 13), "/data");
         assert_eq!(cells(&cut_middle(&"x".repeat(40), 10)), 10);
         assert_eq!(cut("browser", 4), "bro…");
         let mut r = sample(4, vec![proc(10, &"long-name-".repeat(30), 9.1, 2 << 30)]);
         r.disks[0].mount = "/run/media/someone/a-disk-with-a-very-long-label/Data".to_string();
         let f = lines_of(&frame(&r, &view(), &screen(120, 40, false))).join("\n");
-        assert!(f.contains("…/Data"));
+        assert!(f.contains("/run"));
         assert!(f.contains("long-name-long-name-"));
         assert!(f.contains('…'));
     }
