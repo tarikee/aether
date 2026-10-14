@@ -89,7 +89,13 @@ jobs:
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" dist/* --repo "${{ github.repository }}" --title "${{ github.ref_name }}" --notes-from-tag
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        # The notes are the tag's message.
+        run: |
+          sha=$(gh api "repos/$REPO/git/ref/tags/$TAG" --jq .object.sha)
+          gh api "repos/$REPO/git/tags/$sha" --jq .message > notes.md || echo "$TAG" > notes.md
+          gh release create "$TAG" dist/* --repo "$REPO" --title "$TAG" --notes-file notes.md
 
   install:
     needs: publish
