@@ -11,7 +11,16 @@ The values in the picture are made up.
 
 ## Install
 
-Needs a stable Rust toolchain.
+Ready programs are on the [releases page](https://github.com/tarikee/aether/releases): download
+the archive for your system, unpack it and run `aether`. Each holds the program, `LICENSE` and
+`README.md`; `SHA256SUMS` lists their checksums.
+
+- `aether-linux-x86_64.tar.gz`: static, runs on any x86_64 Linux
+- `aether-windows-x86_64.zip`
+- `aether-macos-arm64.tar.gz`: Apple silicon
+- `aether-macos-x86_64.tar.gz`: Intel Macs
+
+Or build it with a stable Rust toolchain:
 
     cargo install --git https://github.com/tarikee/aether
 
