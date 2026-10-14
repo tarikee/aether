@@ -191,6 +191,16 @@ impl State {
     }
 }
 
+/// The UTC time of day as (hour, minute, second).
+fn utc_hms() -> Option<(u32, u32, u32)> {
+    let d = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    Some((
+        (d / 3600 % 24) as u32,
+        (d / 60 % 60) as u32,
+        (d % 60) as u32,
+    ))
+}
+
 /// The time of day, `HH:MM:SS`: local where the system gives it, else UTC.
 fn clock() -> String {
     #[cfg(target_os = "linux")]
@@ -198,7 +208,7 @@ fn clock() -> String {
     #[cfg(windows)]
     let local = aether::sys::windows::calls::local_hms();
     #[cfg(not(any(target_os = "linux", windows)))]
-    let local: Option<(u32, u32, u32)> = None;
+    let local = utc_hms();
     let (h, m, s) = local.unwrap_or_else(|| {
         let d = SystemTime::now()
             .duration_since(UNIX_EPOCH)
