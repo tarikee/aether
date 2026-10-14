@@ -244,7 +244,7 @@ mod tests {
     }
 
     /// Ends a `sleep` this test starts, by pid and by name.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn a_sleep_is_ended_by_pid_and_by_name() {
         let mut child = std::process::Command::new("sleep")

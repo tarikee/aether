@@ -240,7 +240,7 @@ Both have: a tree, a filter, sort keys, signals, disks, network, sensors and bat
 |---|---|
 | Linux | Built and run. AMD GPUs are read. Intel GPUs: written from the kernel's documented files, not yet seen on a real card. NVIDIA GPUs: through NVML, written from its documented interface, not yet seen on a real card. |
 | Windows | Built; its tests run on GitHub's Windows machine. Everything is read except sensors, load average and GPU use per process. GPU and battery are not yet seen on a real machine, the view's keys and mouse are written from the console's API but not yet tried on a real console. |
-| macOS | Compiles (checked with `cargo check`, not run). Every source says "not built for this OS yet", and the view falls back to plain. |
+| macOS | Built and tested on an Apple Silicon Mac (an M1 laptop); its tests run on GitHub's macOS machine. Read: CPU use per thread and load, CPU temperature (the mean of the die sensors), memory and swap, disks with their read and write rates, network, battery, GPU name and use, temperature sensors, every process with its CPU, memory and disk rates, the threads of a process, sockets for `aether port`, and `kill`. A process of another user shows its name, parent, owner and start only. Not read: CPU clock and power, GPU memory, temperature and fans, GPU use per process, memory pressure, disk busy time (they need root or macOS does not give them). The view with its keys and mouse was run in a terminal and leaves it clean. Measured over 30 s of `aether --json` with about 570 processes: 0.28 s of CPU time (about 0.9% of one core), about 8 MB resident. Not tested on an Intel Mac. |
 
 ## Licence
 

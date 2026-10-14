@@ -28,12 +28,12 @@ const COMMANDS: &[(&str, Run)] = &[
 ];
 
 /// Raises the open-file limit once, before any source opens its files.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn raise_limits() {
-    aether::sys::linux::calls::raise_files();
+    aether::sys::calls::raise_files();
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn raise_limits() {}
 
 /// Parses the command line. The live view and `--once` first take the arguments of the file of

@@ -143,45 +143,45 @@ impl Drop for Restore {
     }
 }
 
-#[cfg(target_os = "linux")]
-type Saved = aether::sys::linux::calls::Settings;
-#[cfg(not(target_os = "linux"))]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+type Saved = aether::sys::calls::Settings;
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 type Saved = ();
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn raw_input(_mouse: bool) -> Option<Saved> {
-    aether::sys::linux::calls::raw_input()
+    aether::sys::calls::raw_input()
 }
 #[cfg(windows)]
 fn raw_input(mouse: bool) -> Option<Saved> {
     aether::sys::windows::calls::input_open(mouse).then_some(())
 }
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn raw_input(_mouse: bool) -> Option<Saved> {
     None
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn restore_input(saved: &Saved) {
-    aether::sys::linux::calls::restore_input(saved);
+    aether::sys::calls::restore_input(saved);
 }
 #[cfg(windows)]
 fn restore_input(_saved: &Saved) {
     aether::sys::windows::calls::input_restore();
 }
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn restore_input(_saved: &Saved) {}
 
 /// Waits up to `d` for keys on stdin and returns the bytes that came; none at the timeout or
 /// when a signal ends the wait. Input that has closed reads as Ctrl-C, so the view leaves.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn wait_keys(d: Duration) -> Vec<u8> {
     let ms = i32::try_from(d.as_millis()).unwrap_or(i32::MAX);
-    if !aether::sys::linux::calls::input_ready(ms) {
+    if !aether::sys::calls::input_ready(ms) {
         return Vec::new();
     }
     let mut buf = [0u8; 256];
-    match aether::sys::linux::calls::read_input(&mut buf) {
+    match aether::sys::calls::read_input(&mut buf) {
         Some(0) => vec![0x03],
         Some(n) => buf[..n].to_vec(),
         None => Vec::new(),
@@ -210,7 +210,7 @@ fn wait_keys(d: Duration) -> Vec<u8> {
     HELD.store(held, std::sync::atomic::Ordering::Relaxed);
     out
 }
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn wait_keys(d: Duration) -> Vec<u8> {
     wait(d);
     Vec::new()
@@ -222,9 +222,15 @@ pub(crate) fn user_names(_root: &Root) -> HashMap<u32, String> {
     aether::sys::windows::users::names()
 }
 
+/// The account names by uid, read once from the directory service.
+#[cfg(target_os = "macos")]
+pub(crate) fn user_names(_root: &Root) -> HashMap<u32, String> {
+    aether::sys::users::names()
+}
+
 /// The user names by uid, read once from the password file. A missing file gives none, and a
 /// uid with no name is shown as the number.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 pub(crate) fn user_names(root: &Root) -> HashMap<u32, String> {
     let mut names = HashMap::new();
     if let Ok(text) = std::fs::read_to_string(root.path("etc/passwd")) {
@@ -263,10 +269,9 @@ fn term_not_dumb() -> bool {
 }
 
 /// The terminal's (rows, columns) on standard output, where the OS has that built.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn screen_size() -> Option<(usize, usize)> {
-    aether::sys::linux::calls::term_size()
-        .map(|(rows, cols)| (usize::from(rows), usize::from(cols)))
+    aether::sys::calls::term_size().map(|(rows, cols)| (usize::from(rows), usize::from(cols)))
 }
 
 #[cfg(windows)]
@@ -275,14 +280,14 @@ fn screen_size() -> Option<(usize, usize)> {
         .map(|(rows, cols)| (usize::from(rows), usize::from(cols)))
 }
 
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn screen_size() -> Option<(usize, usize)> {
     None
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) fn catch_stops() {
-    aether::sys::linux::calls::catch_stops();
+    aether::sys::calls::catch_stops();
 }
 
 #[cfg(windows)]
@@ -290,12 +295,12 @@ pub(crate) fn catch_stops() {
     aether::sys::windows::calls::catch_stops();
 }
 
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub(crate) fn catch_stops() {}
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) fn stop_requested() -> bool {
-    aether::sys::linux::calls::stop_requested()
+    aether::sys::calls::stop_requested()
 }
 
 #[cfg(windows)]
@@ -303,7 +308,7 @@ pub(crate) fn stop_requested() -> bool {
     aether::sys::windows::calls::stop_requested()
 }
 
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub(crate) fn stop_requested() -> bool {
     false
 }

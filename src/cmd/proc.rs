@@ -111,7 +111,11 @@ fn write_detail(
             .join(" <- ")
     };
     writeln!(out, "parents    {parents}")?;
-    writeln!(out, "cpu time   {:.2} s", d.cpu_s)?;
+    if d.cpu_s.is_finite() {
+        writeln!(out, "cpu time   {:.2} s", d.cpu_s)?;
+    } else {
+        writeln!(out, "cpu time   -")?;
+    }
     match threads {
         None => writeln!(out, "threads    -")?,
         Some(rows) => {

@@ -16,9 +16,14 @@ pub mod windows;
 #[cfg(windows)]
 pub use windows::*;
 
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(target_os = "macos")]
+pub mod macos;
+#[cfg(target_os = "macos")]
+pub use macos::*;
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 mod unbuilt;
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub use unbuilt::*;
 
 /// Where the OS files are read from: `/`, or `$AETHER_ROOT` (fixture trees in tests).

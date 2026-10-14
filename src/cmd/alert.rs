@@ -203,11 +203,11 @@ fn utc_hms() -> Option<(u32, u32, u32)> {
 
 /// The time of day, `HH:MM:SS`: local where the system gives it, else UTC.
 fn clock() -> String {
-    #[cfg(target_os = "linux")]
-    let local = aether::sys::linux::calls::local_hms();
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let local = aether::sys::calls::local_hms();
     #[cfg(windows)]
     let local = aether::sys::windows::calls::local_hms();
-    #[cfg(not(any(target_os = "linux", windows)))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     let local = utc_hms();
     let (h, m, s) = local.or_else(utc_hms).unwrap_or_default();
     format!("{h:02}:{m:02}:{s:02}")
