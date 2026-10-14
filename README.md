@@ -11,32 +11,68 @@ The values in the picture are made up.
 
 ## Install
 
-One line downloads the latest release for your system, checks it against `SHA256SUMS` and puts
-it on your `PATH`, so typing `aether` starts it. Run it again to update.
+### One line
 
-Linux and macOS (installs to `/usr/local/bin`, asking for sudo only if needed):
+Downloads the latest release for your system and processor, checks it against `SHA256SUMS` and
+puts it on your `PATH`, so typing `aether` starts it. Run the same line again to update.
+
+Linux and macOS (installs to `/usr/local/bin`, asking for sudo only if it has to):
 
     curl -fsSL https://raw.githubusercontent.com/tarikee/aether/main/install.sh | sh
 
-Windows, in PowerShell (installs to `%LOCALAPPDATA%\Programs\aether` and adds it to your `PATH`):
+Windows, in PowerShell (installs to `%LOCALAPPDATA%\Programs\aether` and adds that folder to your
+`PATH`):
 
     irm https://raw.githubusercontent.com/tarikee/aether/main/install.ps1 | iex
 
-Or download it yourself from the [releases page](https://github.com/tarikee/aether/releases):
-unpack the archive for your system and run `aether`. Each archive holds the program, `LICENSE`
-and `README.md`; `SHA256SUMS` lists their checksums.
+Both read two settings: `AETHER_VERSION` installs a given release instead of the latest
+(`AETHER_VERSION=v0.1.1`), and `AETHER_INSTALL_DIR` picks another folder. Every release runs
+both lines on Linux (x86_64 and ARM), macOS and Windows right after it is published. The scripts
+are short: read [install.sh](install.sh) or [install.ps1](install.ps1) before you run them.
 
-- `aether-linux-x86_64.tar.gz`: static, runs on any x86_64 Linux
-- `aether-linux-arm64.tar.gz`: static, runs on any 64-bit ARM Linux (Raspberry Pi 3 and later)
-- `aether_VERSION_amd64.deb`, `aether_VERSION_arm64.deb`: Debian, Ubuntu, Mint
-  (`sudo apt install ./aether_*.deb`)
-- `aether-VERSION-1.x86_64.rpm`, `aether-VERSION-1.aarch64.rpm`: Fedora, Nobara, openSUSE
-  (`sudo dnf install ./aether-*.rpm`)
-- `aether-windows-x86_64.zip`
-- `aether-macos-arm64.tar.gz`: Apple silicon
-- `aether-macos-x86_64.tar.gz`: Intel Macs
+### Packages
 
-Or build it with a stable Rust toolchain:
+Debian, Ubuntu, Mint and other apt systems: download the `.deb` for your processor from the
+[releases page](https://github.com/tarikee/aether/releases), then
+
+    sudo apt install ./aether_*_amd64.deb      # or _arm64.deb
+
+Fedora, Nobara, openSUSE and other rpm systems:
+
+    sudo dnf install ./aether-*.x86_64.rpm     # or .aarch64.rpm
+
+Updates come the same way, from the newer file. These put `aether` in `/usr/bin`.
+
+### By hand
+
+Every release on the [releases page](https://github.com/tarikee/aether/releases) has these
+archives. Each holds the program, `LICENSE` and `README.md`; `SHA256SUMS` lists their checksums.
+
+| File | For |
+|---|---|
+| `aether-linux-x86_64.tar.gz` | any x86_64 Linux (one static program, no libraries needed) |
+| `aether-linux-arm64.tar.gz` | any 64-bit ARM Linux, such as a Raspberry Pi 3 or later (static too) |
+| `aether-macos-arm64.tar.gz` | Macs with Apple silicon |
+| `aether-macos-x86_64.tar.gz` | Macs with an Intel processor |
+| `aether-windows-x86_64.zip` | 64-bit Windows |
+
+Unpack it and run `aether` from that folder, or move it to a folder on your `PATH`
+(`sudo mv aether /usr/local/bin/`). On macOS a downloaded program is held back the first time
+because it is not signed by Apple: `xattr -d com.apple.quarantine aether` once releases it.
+
+### Remove
+
+- One line or by hand on Linux and macOS: `sudo rm /usr/local/bin/aether` (or wherever you put it).
+- One line on Windows: delete `%LOCALAPPDATA%\Programs\aether` and remove it from your `PATH`
+  (Settings, "Edit environment variables for your account").
+- Packages: `sudo apt remove aether` or `sudo dnf remove aether`.
+
+aether writes nothing else to your disk unless you ask it to (`record`, or a file of default
+arguments you made yourself).
+
+### From source
+
+With a stable Rust toolchain (1.87 or newer):
 
     cargo install --git https://github.com/tarikee/aether
 
