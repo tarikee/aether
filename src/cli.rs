@@ -115,7 +115,7 @@ fn named(list: &Option<Vec<String>>, name: &str) -> bool {
 pub struct Parsed {
     /// The command's name, as the list in `main.rs` has it.
     pub command: &'static str,
-    /// The PID or NAME for `proc` and `kill`.
+    /// The PID, NAME or :PORT for `proc` and `kill`; the PORT for `port`.
     pub target: Option<String>,
     pub once: bool,
     pub json: bool,
@@ -172,12 +172,16 @@ Usage:
       live: every vital and every process, rewritten in place
   aether --once [same options]
       one reading, then exit
-  aether proc PID|NAME
+  aether port [PORT] [--all] [--json]
+      the listening sockets: protocol, address, port, pid, process, user, sorted by port.
+      PORT shows who holds that port, listening or connected; --all adds connections.
+      A process that cannot be seen shows a dash (root shows it).
+  aether proc PID|NAME|:PORT
       one process in full: command line, program, folder, parents, CPU time, open files
-  aether kill PID|NAME [--force] [-y] [-s NAME|NUMBER]
+  aether kill PID|NAME|:PORT [--force] [-y] [-s NAME|NUMBER]
       asks the process to stop and waits 3 s; says if it is still there.
       --force kills it. By NAME it lists the matches and asks first; -y skips the question.
-      -s sends that one signal and does not wait.
+      -s sends that one signal and does not wait. :PORT is the process listening on it.
   aether record [--to FILE] [--for DURATION] [-i SECS] [--only LIST]
       reads without drawing until Ctrl-C or DURATION (90s, 30m, 8h), then prints the peaks:
       the highest value of each reading, when, and the average; the five processes with the
@@ -209,7 +213,7 @@ Options:
   --filter TEXT          only processes whose name or command line contains TEXT
   --flat                 single processes, not grouped by app
   --tree                 single processes, each under its parent
-  --all                  print every row, past the screen's height
+  --all                  print every row, past the screen's height (port: every connection)
   --only LIST            only these parts, e.g. cpu,mem (default: everything)
   --disk MOUNT[,MOUNT]   only these disks, by mount point (default: every disk)
   --net NAME[,NAME]      only these network interfaces (default: every one)
@@ -379,6 +383,15 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
         ["alert"] => return Err("alert needs at least one rule, like cpu>90/30s".to_string()),
         ["record", ..] => return Err("record takes no argument; use --to FILE".to_string()),
         ["peaks", ..] => return Err("peaks needs one FILE".to_string()),
+        ["port"] => p.command = "port",
+        ["port", t] => {
+            if crate::cmd::port::parse_port(t).is_none() {
+                return Err(format!("{t} is not a port number (0 to 65535)"));
+            }
+            p.command = "port";
+            p.target = Some((*t).to_string());
+        }
+        ["port", ..] => return Err("port takes at most one PORT".to_string()),
         ["proc" | "kill", ..] => return Err("needs one PID or NAME".to_string()),
         [w, ..] => return Err(format!("unknown command {w}")),
     }
@@ -412,6 +425,20 @@ mod tests {
         assert_eq!(p.command, "live");
         assert!(!p.once);
         assert_eq!(p.view.by, Sort::Cpu);
+    }
+
+    #[test]
+    fn port_takes_an_optional_port() {
+        assert_eq!(parse(&args("port")).unwrap().command, "port");
+        let p = parse(&args("port :8080 --all --json")).unwrap();
+        assert_eq!(p.target.as_deref(), Some(":8080"));
+        assert!(p.view.all && p.json);
+        assert!(parse(&args("port web")).is_err());
+        assert!(parse(&args("port 1 2")).is_err());
+        assert_eq!(
+            parse(&args("kill :80")).unwrap().target.as_deref(),
+            Some(":80")
+        );
     }
 
     #[test]

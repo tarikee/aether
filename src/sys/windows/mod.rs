@@ -12,6 +12,7 @@ pub mod mem;
 pub mod net;
 pub mod procs;
 pub mod sensors;
+pub mod sockets;
 pub mod users;
 
 pub use battery::Battery;
@@ -23,6 +24,7 @@ pub use mem::Mem;
 pub use net::Nets;
 pub use procs::{command_line, detail, end, send_signal, Procs};
 pub use sensors::Sensors;
+pub use sockets::{attach_owners, read_sockets};
 
 use super::Built;
 

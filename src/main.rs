@@ -21,6 +21,7 @@ const COMMANDS: &[(&str, Run)] = &[
     ("record", cmd::record::run),
     ("peaks", cmd::record::peaks),
     ("alert", cmd::alert::run),
+    ("port", cmd::port::run),
     ("check", cmd::check::run),
     ("version", cli::version),
     ("help", cli::help),

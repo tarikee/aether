@@ -41,6 +41,14 @@ pub fn detail(_root: &Root, _pid: u32) -> Option<ProcDetail> {
     None
 }
 
+/// The sockets of the machine; not built on this OS yet.
+pub fn read_sockets(_root: &Root) -> Option<Vec<super::Socket>> {
+    None
+}
+
+/// Finds the process of each socket; nothing to do here.
+pub fn attach_owners(_root: &Root, _sockets: &mut [super::Socket]) {}
+
 /// A file kept open between readings.
 pub struct PFile {
     buf: Vec<u8>,

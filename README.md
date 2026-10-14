@@ -11,7 +11,16 @@ The values in the picture are made up.
 
 ## Install
 
-Needs a stable Rust toolchain.
+Every release on the [releases page](https://github.com/tarikee/aether/releases) has ready
+programs: download the archive for your system, unpack it and run `aether`. Each holds the program, `LICENSE` and
+`README.md`; `SHA256SUMS` lists their checksums.
+
+- `aether-linux-x86_64.tar.gz`: static, runs on any x86_64 Linux
+- `aether-windows-x86_64.zip`
+- `aether-macos-arm64.tar.gz`: Apple silicon
+- `aether-macos-x86_64.tar.gz`: Intel Macs
+
+Or build it with a stable Rust toolchain:
 
     cargo install --git https://github.com/tarikee/aether
 
@@ -72,12 +81,16 @@ Usage:
       live: every vital and every process, rewritten in place
   aether --once [same options]
       one reading, then exit
-  aether proc PID|NAME
+  aether port [PORT] [--all] [--json]
+      the listening sockets: protocol, address, port, pid, process, user, sorted by port.
+      PORT shows who holds that port, listening or connected; --all adds connections.
+      A process that cannot be seen shows a dash (root shows it).
+  aether proc PID|NAME|:PORT
       one process in full: command line, program, folder, parents, CPU time, open files
-  aether kill PID|NAME [--force] [-y] [-s NAME|NUMBER]
+  aether kill PID|NAME|:PORT [--force] [-y] [-s NAME|NUMBER]
       asks the process to stop and waits 3 s; says if it is still there.
       --force kills it. By NAME it lists the matches and asks first; -y skips the question.
-      -s sends that one signal and does not wait.
+      -s sends that one signal and does not wait. :PORT is the process listening on it.
   aether record [--to FILE] [--for DURATION] [-i SECS] [--only LIST]
       reads without drawing until Ctrl-C or DURATION (90s, 30m, 8h), then prints the peaks:
       the highest value of each reading, when, and the average; the five processes with the
@@ -109,7 +122,7 @@ Options:
   --filter TEXT          only processes whose name or command line contains TEXT
   --flat                 single processes, not grouped by app
   --tree                 single processes, each under its parent
-  --all                  print every row, past the screen's height
+  --all                  print every row, past the screen's height (port: every connection)
   --only LIST            only these parts, e.g. cpu,mem (default: everything)
   --disk MOUNT[,MOUNT]   only these disks, by mount point (default: every disk)
   --net NAME[,NAME]      only these network interfaces (default: every one)

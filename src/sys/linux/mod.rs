@@ -12,6 +12,7 @@ pub mod net;
 pub mod procs;
 pub mod reader;
 pub mod sensors;
+pub mod sockets;
 
 pub use battery::Battery;
 pub use calls::send_signal;
@@ -24,6 +25,7 @@ pub use net::Nets;
 pub use procs::{command_line, detail, end, Procs};
 pub use reader::{fields, lines, num, value_of, PFile};
 pub use sensors::Sensors;
+pub use sockets::{attach_owners, read_sockets};
 
 use super::Built;
 

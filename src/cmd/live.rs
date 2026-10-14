@@ -164,14 +164,14 @@ fn wait_keys(d: Duration) -> Vec<u8> {
 
 /// The account names by uid, read once from the running processes' accounts.
 #[cfg(windows)]
-fn user_names(_root: &Root) -> HashMap<u32, String> {
+pub(crate) fn user_names(_root: &Root) -> HashMap<u32, String> {
     aether::sys::windows::users::names()
 }
 
 /// The user names by uid, read once from the password file. A missing file gives none, and a
 /// uid with no name is shown as the number.
 #[cfg(not(windows))]
-fn user_names(root: &Root) -> HashMap<u32, String> {
+pub(crate) fn user_names(root: &Root) -> HashMap<u32, String> {
     let mut names = HashMap::new();
     if let Ok(text) = std::fs::read_to_string(root.path("etc/passwd")) {
         for line in text.lines() {

@@ -33,6 +33,23 @@ pub(crate) fn resolve(root: &Root, target: &str) -> Result<(u32, String), String
     if let Ok(pid) = target.parse::<u32>() {
         return Ok((pid, String::new()));
     }
+    if target.starts_with(':') {
+        let Some(port) = crate::cmd::port::parse_port(target) else {
+            return Err(format!("{target} is not a port"));
+        };
+        let found = crate::cmd::port::listeners(root, port)?;
+        return match found.as_slice() {
+            [one] => Ok(one.clone()),
+            many => {
+                let pids: Vec<String> = many.iter().map(|(p, _)| p.to_string()).collect();
+                Err(format!(
+                    "{} processes listen on port {port} ({}): give one PID",
+                    many.len(),
+                    pids.join(", ")
+                ))
+            }
+        };
+    }
     let mut procs = Procs::open(root);
     let found = named(procs.read(), target);
     match found.as_slice() {
