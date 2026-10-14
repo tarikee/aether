@@ -5,3 +5,4 @@ pub mod keys;
 pub mod kill;
 pub mod live;
 pub mod proc;
+pub mod wininput;

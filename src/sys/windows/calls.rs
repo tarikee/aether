@@ -41,9 +41,11 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_SHARE_WRITE, IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS, OPEN_EXISTING,
 };
 use windows_sys::Win32::System::Console::{
-    GetConsoleMode, GetConsoleOutputCP, GetConsoleScreenBufferInfo, GetStdHandle,
-    SetConsoleCtrlHandler, SetConsoleMode, SetConsoleOutputCP, CONSOLE_SCREEN_BUFFER_INFO,
-    CTRL_BREAK_EVENT, CTRL_C_EVENT, ENABLE_PROCESSED_OUTPUT, ENABLE_VIRTUAL_TERMINAL_PROCESSING,
+    GetConsoleMode, GetConsoleOutputCP, GetConsoleScreenBufferInfo, GetNumberOfConsoleInputEvents,
+    GetStdHandle, ReadConsoleInputW, SetConsoleCtrlHandler, SetConsoleMode, SetConsoleOutputCP,
+    CONSOLE_SCREEN_BUFFER_INFO, CTRL_BREAK_EVENT, CTRL_C_EVENT, ENABLE_EXTENDED_FLAGS,
+    ENABLE_MOUSE_INPUT, ENABLE_PROCESSED_INPUT, ENABLE_PROCESSED_OUTPUT,
+    ENABLE_VIRTUAL_TERMINAL_PROCESSING, INPUT_RECORD, KEY_EVENT, MOUSE_EVENT, STD_INPUT_HANDLE,
     STD_OUTPUT_HANDLE,
 };
 use windows_sys::Win32::System::Diagnostics::Debug::{
@@ -956,6 +958,7 @@ fn stdout_handle() -> HANDLE {
 
 /// Puts the console's mode and code page back, once.
 fn restore_console() {
+    input_restore();
     if SAVED.swap(false, Ordering::SeqCst) {
         // SAFETY: no pointers; a handle that is not a console makes the calls fail, harmlessly.
         unsafe {
@@ -1036,4 +1039,119 @@ pub fn term_size() -> Option<(u16, u16)> {
     let rows = u16::try_from(i32::from(w.Bottom) - i32::from(w.Top) + 1).ok()?;
     let cols = u16::try_from(i32::from(w.Right) - i32::from(w.Left) + 1).ok()?;
     (rows > 0 && cols > 0).then_some((rows, cols))
+}
+
+// ---------------------------------------------------------------------------------------------
+// The console's input: keys and mouse as events
+
+static INPUT_SAVED: AtomicBool = AtomicBool::new(false);
+static INPUT_MODE: AtomicU32 = AtomicU32::new(0);
+
+/// One input event of the console that the view uses.
+#[derive(Clone, Copy, Debug)]
+pub enum InputEvent {
+    Key {
+        down: bool,
+        vk: u16,
+        ch: u16,
+    },
+    Mouse {
+        x: i16,
+        y: i16,
+        buttons: u32,
+        flags: u32,
+    },
+}
+
+fn stdin_handle() -> HANDLE {
+    // SAFETY: no pointers.
+    unsafe { GetStdHandle(STD_INPUT_HANDLE) }
+}
+
+/// Sets standard input's console to take key and mouse events: no line editing, no echo,
+/// quick-edit off (it would take the mouse for selecting text), the mouse on if asked. Ctrl-C
+/// stays a stop. Put back by `input_restore`, and by the Ctrl-C handler when the console
+/// closes. `false` when it is not a console.
+pub fn input_open(mouse: bool) -> bool {
+    let h = stdin_handle();
+    let mut mode = 0u32;
+    // SAFETY: a valid out pointer; a handle that is not a console makes the call fail.
+    if h.is_null() || unsafe { GetConsoleMode(h, &mut mode) } == 0 {
+        return false;
+    }
+    INPUT_MODE.store(mode, Ordering::SeqCst);
+    INPUT_SAVED.store(true, Ordering::SeqCst);
+    let mut want = ENABLE_EXTENDED_FLAGS | ENABLE_PROCESSED_INPUT;
+    if mouse {
+        want |= ENABLE_MOUSE_INPUT;
+    }
+    // SAFETY: no pointers.
+    if unsafe { SetConsoleMode(h, want) } == 0 {
+        input_restore();
+        return false;
+    }
+    true
+}
+
+/// Puts standard input's console mode back as it was, once.
+pub fn input_restore() {
+    if INPUT_SAVED.swap(false, Ordering::SeqCst) {
+        // SAFETY: no pointers; a handle that is not a console makes the call fail, harmlessly.
+        unsafe { SetConsoleMode(stdin_handle(), INPUT_MODE.load(Ordering::SeqCst)) };
+    }
+}
+
+/// Waits up to `ms` for console input, in slices so a stop ends the wait, and returns the key
+/// and mouse events that came (none at the timeout). Other events are dropped.
+pub fn input_events(ms: u32) -> Vec<InputEvent> {
+    let h = stdin_handle();
+    let mut left = ms;
+    loop {
+        let slice = left.min(50);
+        // SAFETY: no pointers.
+        let ready = unsafe { WaitForSingleObject(h, slice) } == WAIT_OBJECT_0;
+        if ready {
+            break;
+        }
+        left -= slice;
+        if left == 0 || stop_requested() {
+            return Vec::new();
+        }
+    }
+    let mut waiting = 0u32;
+    // SAFETY: a valid out pointer.
+    if unsafe { GetNumberOfConsoleInputEvents(h, &mut waiting) } == 0 || waiting == 0 {
+        return Vec::new();
+    }
+    // SAFETY: an all-zero INPUT_RECORD is valid; the call fills what it reports as read.
+    let mut records: [INPUT_RECORD; 64] = unsafe { zeroed() };
+    let mut read = 0u32;
+    let want = waiting.min(64);
+    // SAFETY: the buffer holds `want` records; a valid out pointer.
+    if unsafe { ReadConsoleInputW(h, records.as_mut_ptr(), want, &mut read) } == 0 {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for r in records.iter().take(read as usize) {
+        // SAFETY: the event type says which member of the union the console filled.
+        unsafe {
+            if r.EventType == KEY_EVENT as u16 {
+                let k = r.Event.KeyEvent;
+                out.push(InputEvent::Key {
+                    down: k.bKeyDown != 0,
+                    vk: k.wVirtualKeyCode,
+                    ch: k.uChar.UnicodeChar,
+                });
+            } else if r.EventType == MOUSE_EVENT as u16 {
+                let m = r.Event.MouseEvent;
+                out.push(InputEvent::Mouse {
+                    x: m.dwMousePosition.X,
+                    y: m.dwMousePosition.Y,
+                    buttons: m.dwButtonState,
+                    flags: m.dwEventFlags,
+                });
+            }
+        }
+    }
+    out
 }

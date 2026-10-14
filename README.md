@@ -62,6 +62,12 @@ sensors, then the thread bars, so the process table keeps 8 rows (5 under 30 row
 | `?` | this help |
 | `q` | quit |
 
+The mouse works in the view too (`--no-mouse` turns it off; `--no-keys` turns keys and mouse
+off). Click a process to select it, double-click for its detail. Click a column header to sort by
+it, again to reverse. The wheel over the table moves the selection 3 rows. A click on a key in the
+bottom border does what that key does. The terminal must send SGR mouse reports (most do); the
+view turns them on when it starts and off again when it leaves.
+
 ## Commands
 
 ```
@@ -101,7 +107,8 @@ Options:
   --json                 one JSON object per reading; a missing reading is null
   --plain                the plain text view, not the full screen on a terminal
   --no-color             the full screen without colour (NO_COLOR does the same)
-  --no-keys              the full screen takes no keys
+  --no-keys              the full screen takes no keys and no mouse
+  --no-mouse             the full screen takes keys but not the mouse
   -s, --signal NAME|NUMBER  kill: the signal to send (TERM, SIGSTOP, 19; 1 to 64)
   --no-defaults          do not read the file of default arguments (aether/args)
 ```
@@ -180,7 +187,7 @@ Both have: a tree, a filter, sort keys, signals, disks, network, sensors and bat
 | System | Status |
 |---|---|
 | Linux | Built and run. AMD GPUs are read. NVIDIA and Intel GPUs are not yet. |
-| Windows | Built; its tests run on GitHub's Windows machine. Everything is read except sensors, load average and GPU use per process. GPU and battery are not yet seen on a real machine, and the view's keys are not built on Windows yet. |
+| Windows | Built; its tests run on GitHub's Windows machine. Everything is read except sensors, load average and GPU use per process. GPU and battery are not yet seen on a real machine, the view's keys and mouse are written from the console's API but not yet tried on a real console. |
 | macOS | Compiles (checked with `cargo check`, not run). Every source says "not built for this OS yet", and the view falls back to plain. |
 
 ## Licence

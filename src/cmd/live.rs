@@ -3,7 +3,9 @@
 //! take the screen.
 
 use crate::cli::{compare, Keys, Parsed, Sort, View};
-use crate::cmd::keys::{self, Action, Ident, Mode as Pane, Ui};
+use crate::cmd::keys::{self, Action, Ident, Input, Mode as Pane, Ui};
+#[cfg(windows)]
+use crate::cmd::wininput;
 use crate::out::history::History;
 use crate::out::screen::{self, Overlay, Screen};
 use crate::out::tree::Tree;
@@ -27,6 +29,10 @@ const ONCE_WAIT: Duration = Duration::from_millis(250);
 /// The alternate screen, with the cursor hidden: entering the full-screen view.
 const ENTER: &[u8] = b"\x1b[?1049h\x1b[?25l";
 
+/// Mouse reports on (presses and the wheel, in the SGR form), and off again.
+const MOUSE_ON: &[u8] = b"\x1b[?1000h\x1b[?1006h";
+const MOUSE_OFF: &[u8] = b"\x1b[?1006l\x1b[?1000l";
+
 /// What the terminal had: colours reset, the alternate screen left, the cursor shown.
 const LEAVE: &[u8] = b"\x1b[0m\x1b[?1049l\x1b[?25h";
 
@@ -42,6 +48,8 @@ pub(crate) struct Mode {
     pub colour: bool,
     /// The keys are on: stdin is a terminal in raw mode.
     pub keys: bool,
+    /// The mouse is on: reports are asked of the terminal while the view runs.
+    pub mouse: bool,
     /// The user names by uid.
     pub users: Rc<HashMap<u32, String>>,
 }
@@ -72,7 +80,7 @@ pub fn run(parsed: &Parsed) -> ExitCode {
     }
     // The keys take stdin in raw mode; `Restore` puts it back however the run ends.
     let saved = if full && !parsed.no_keys && io::stdin().is_terminal() {
-        raw_input()
+        raw_input(!parsed.no_mouse)
     } else {
         None
     };
@@ -82,6 +90,7 @@ pub fn run(parsed: &Parsed) -> ExitCode {
         screen: full,
         colour: screen_colour(parsed),
         keys: _restore.saved.is_some(),
+        mouse: _restore.saved.is_some() && !parsed.no_mouse,
         users: Rc::new(user_names(&root)),
     };
     let keys_on = mode.keys;
@@ -126,11 +135,15 @@ type Saved = aether::sys::linux::calls::Settings;
 type Saved = ();
 
 #[cfg(target_os = "linux")]
-fn raw_input() -> Option<Saved> {
+fn raw_input(_mouse: bool) -> Option<Saved> {
     aether::sys::linux::calls::raw_input()
 }
-#[cfg(not(target_os = "linux"))]
-fn raw_input() -> Option<Saved> {
+#[cfg(windows)]
+fn raw_input(mouse: bool) -> Option<Saved> {
+    aether::sys::windows::calls::input_open(mouse).then_some(())
+}
+#[cfg(not(any(target_os = "linux", windows)))]
+fn raw_input(_mouse: bool) -> Option<Saved> {
     None
 }
 
@@ -138,7 +151,11 @@ fn raw_input() -> Option<Saved> {
 fn restore_input(saved: &Saved) {
     aether::sys::linux::calls::restore_input(saved);
 }
-#[cfg(not(target_os = "linux"))]
+#[cfg(windows)]
+fn restore_input(_saved: &Saved) {
+    aether::sys::windows::calls::input_restore();
+}
+#[cfg(not(any(target_os = "linux", windows)))]
 fn restore_input(_saved: &Saved) {}
 
 /// Waits up to `d` for keys on stdin and returns the bytes that came; none at the timeout or
@@ -149,14 +166,37 @@ fn wait_keys(d: Duration) -> Vec<u8> {
     if !aether::sys::linux::calls::input_ready(ms) {
         return Vec::new();
     }
-    let mut buf = [0u8; 64];
+    let mut buf = [0u8; 256];
     match aether::sys::linux::calls::read_input(&mut buf) {
         Some(0) => vec![0x03],
         Some(n) => buf[..n].to_vec(),
         None => Vec::new(),
     }
 }
-#[cfg(not(target_os = "linux"))]
+/// The console's key and mouse events, as the bytes a terminal would send.
+#[cfg(windows)]
+fn wait_keys(d: Duration) -> Vec<u8> {
+    use aether::sys::windows::calls::{input_events, InputEvent};
+    let ms = u32::try_from(d.as_millis()).unwrap_or(u32::MAX);
+    let mut out = Vec::new();
+    static HELD: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let mut held = HELD.load(std::sync::atomic::Ordering::Relaxed);
+    let events = input_events(ms);
+    for e in events {
+        match e {
+            InputEvent::Key { down, vk, ch } => wininput::key_bytes(down, vk, ch, &mut out),
+            InputEvent::Mouse {
+                x,
+                y,
+                buttons,
+                flags,
+            } => wininput::mouse_bytes(&mut held, x, y, buttons, flags, &mut out),
+        }
+    }
+    HELD.store(held, std::sync::atomic::Ordering::Relaxed);
+    out
+}
+#[cfg(not(any(target_os = "linux", windows)))]
 fn wait_keys(d: Duration) -> Vec<u8> {
     wait(d);
     Vec::new()
@@ -266,13 +306,19 @@ fn wait(d: Duration) {
 }
 
 /// Enters the full-screen view: the alternate screen, the cursor hidden.
-fn enter(out: &mut dyn Write) -> io::Result<()> {
+fn enter(out: &mut dyn Write, mouse: bool) -> io::Result<()> {
     out.write_all(ENTER)?;
+    if mouse {
+        out.write_all(MOUSE_ON)?;
+    }
     out.flush()
 }
 
 /// Leaves it: the terminal is put back as it was.
-fn leave(out: &mut dyn Write) -> io::Result<()> {
+fn leave(out: &mut dyn Write, mouse: bool) -> io::Result<()> {
+    if mouse {
+        out.write_all(MOUSE_OFF)?;
+    }
     out.write_all(LEAVE)?;
     out.flush()
 }
@@ -468,10 +514,11 @@ fn frames(
     if !mode.screen {
         return draw(&mut read, out, parsed, mode, &mut wait, &mut size, &stop);
     }
-    enter(out)?;
+    let mouse = mode.mouse;
+    enter(out, mouse)?;
     let result = draw(&mut read, out, parsed, mode, &mut wait, &mut size, &stop);
     // Whatever ended the run, the terminal is put back; a failed write here means it is gone.
-    let _ = leave(out);
+    let _ = leave(out, mouse);
     result
 }
 
@@ -588,6 +635,7 @@ fn draw(
         keys: mode.keys,
         prompt: None,
         users: Rc::clone(&mode.users),
+        hits: screen::Hits::default(),
     };
     let mut at = Instant::now();
     let mut readings = 0u32;
@@ -686,11 +734,17 @@ fn draw(
             at = Instant::now();
         }
         let mut pos = 0;
-        while let Some((key, used)) = keys::next(&bytes[pos..]) {
+        while let Some((input, used)) = keys::next_input(&bytes[pos..]) {
             pos += used;
-            let Some(k) = key else { continue };
+            let Some(input) = input else { continue };
             let (index, was_paused, filter) = (ui.index, ui.paused, ui.view.filter.clone());
-            let action = ui.apply(k, last_rows);
+            let action = match input {
+                Input::Key(k) => ui.apply(k, last_rows),
+                Input::Mouse(m) if mode.mouse => {
+                    ui.mouse(m, &state.hits, last_rows, Instant::now())
+                }
+                Input::Mouse(_) => Action::None,
+            };
             if ui.index != index {
                 ui.ident = None;
             }
@@ -735,6 +789,7 @@ mod tests {
             screen: false,
             colour: false,
             keys: false,
+            mouse: false,
             users: Rc::default(),
         }
     }

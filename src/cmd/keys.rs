@@ -2,7 +2,8 @@
 //! Nothing here reads the terminal, sends a signal or reads a process: the live loop does that.
 
 use crate::cli::{Sort, View};
-use crate::out::screen::Overlay;
+use crate::out::screen::{Hits, Overlay};
+use std::time::{Duration, Instant};
 
 /// One key the view acts on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,6 +44,67 @@ pub(crate) fn next(buf: &[u8]) -> Option<(Option<Key>, usize)> {
             }
         }
     })
+}
+
+/// What the mouse did: a press of a button, or the wheel. Cells count from 0.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Click {
+    Left,
+    Other,
+    WheelUp,
+    WheelDown,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Mouse {
+    pub click: Click,
+    pub x: usize,
+    pub y: usize,
+}
+
+/// One thing the user did: a key or the mouse.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Input {
+    Key(Key),
+    Mouse(Mouse),
+}
+
+/// The next input at the start of `buf`: an SGR mouse report (`ESC [ < b ; x ; y M`) or a key.
+/// A release, a drag and a report that is cut short give `None` with the bytes they took.
+pub(crate) fn next_input(buf: &[u8]) -> Option<(Option<Input>, usize)> {
+    if buf.starts_with(b"\x1b[<") {
+        let end = buf.iter().position(|c| matches!(c, b'M' | b'm'));
+        let Some(end) = end else {
+            return Some((None, buf.len()));
+        };
+        let text = std::str::from_utf8(&buf[3..end]).unwrap_or("");
+        let mut nums = text.split(';').map(|n| n.parse::<usize>().ok());
+        let input = match (
+            nums.next().flatten(),
+            nums.next().flatten(),
+            nums.next().flatten(),
+        ) {
+            (Some(b), Some(x), Some(y)) if buf[end] == b'M' && b & 32 == 0 && x > 0 && y > 0 => {
+                let click = match b {
+                    0 => Some(Click::Left),
+                    1 | 2 => Some(Click::Other),
+                    64 => Some(Click::WheelUp),
+                    65 => Some(Click::WheelDown),
+                    _ => None,
+                };
+                click.map(|click| {
+                    Input::Mouse(Mouse {
+                        click,
+                        x: x - 1,
+                        y: y - 1,
+                    })
+                })
+            }
+            _ => None,
+        };
+        return Some((input, end + 1));
+    }
+    next(buf).map(|(k, n)| (k.map(Input::Key), n))
 }
 
 fn utf8_len(b: u8) -> usize {
@@ -86,6 +148,25 @@ fn escape(buf: &[u8]) -> (Option<Key>, usize) {
         }
         Some(_) => (Some(Key::Esc), 1),
     }
+}
+
+/// The key a hint in the bottom border names.
+fn hint_key(name: &str) -> Option<Key> {
+    Some(match name {
+        "↑" => Key::Up,
+        "↓" => Key::Down,
+        "←" => Key::Left,
+        "→" => Key::Right,
+        "enter" => Key::Enter,
+        "space" => Key::Char(' '),
+        other => {
+            let mut c = other.chars();
+            match (c.next(), c.next()) {
+                (Some(ch), None) => Key::Char(ch),
+                _ => return None,
+            }
+        }
+    })
 }
 
 /// The sort keys the left and right arrows step through, in order.
@@ -153,7 +234,14 @@ pub(crate) struct Ui {
     pub interval_s: f64,
     /// The filter text while it is typed.
     pub draft: String,
+    /// The last left click on a row: when and which, for the double click.
+    pub clicked: Option<(Instant, usize)>,
 }
+
+/// Two clicks on the same row within this time are a double click.
+const DOUBLE: Duration = Duration::from_millis(400);
+/// The rows the wheel moves the selection by.
+const WHEEL_ROWS: usize = 3;
 
 impl Ui {
     pub(crate) fn new(view: View, interval_s: f64) -> Ui {
@@ -165,7 +253,61 @@ impl Ui {
             paused: false,
             interval_s,
             draft: String::new(),
+            clicked: None,
         }
+    }
+
+    /// Applies one mouse press. `hits` is where the last frame drew the table and the hints,
+    /// `rows` how many rows the table has. Only the table's own view takes the mouse.
+    pub(crate) fn mouse(&mut self, m: Mouse, hits: &Hits, rows: usize, now: Instant) -> Action {
+        if self.mode != Mode::Normal {
+            return Action::None;
+        }
+        let inside = hits
+            .table
+            .is_some_and(|(y0, y1, x0, x1)| (y0..=y1).contains(&m.y) && (x0..=x1).contains(&m.x));
+        let last = rows.saturating_sub(1);
+        match m.click {
+            Click::WheelUp if inside => self.index = self.index.saturating_sub(WHEEL_ROWS),
+            Click::WheelDown if inside => self.index = (self.index + WHEEL_ROWS).min(last),
+            Click::Left if inside => {
+                if m.y == hits.keys_y {
+                    let hint = hits.keys.iter().find(|(a, b, _)| (*a..=*b).contains(&m.x));
+                    return match hint.and_then(|(_, _, k)| hint_key(k)) {
+                        Some(key) => self.apply(key, rows),
+                        None => Action::None,
+                    };
+                }
+                if m.y == hits.header_y {
+                    let cell = hits
+                        .headers
+                        .iter()
+                        .find(|(a, b, _)| (*a..=*b).contains(&m.x));
+                    if let Some(&(_, _, sort)) = cell {
+                        if self.view.by == sort {
+                            self.view.reverse = !self.view.reverse;
+                        } else {
+                            self.view.by = sort;
+                            self.view.reverse = false;
+                        }
+                    }
+                } else if m.y >= hits.first_y && m.y < hits.first_y + hits.shown {
+                    let at = hits.scroll + (m.y - hits.first_y);
+                    let twice = self
+                        .clicked
+                        .is_some_and(|(t, i)| i == at && now.duration_since(t) <= DOUBLE);
+                    self.index = at;
+                    if twice {
+                        self.clicked = None;
+                        self.mode = Mode::Detail;
+                    } else {
+                        self.clicked = Some((now, at));
+                    }
+                }
+            }
+            _ => {}
+        }
+        Action::None
     }
 
     /// What the screen shows over the process table.
@@ -492,5 +634,132 @@ mod tests {
         assert_eq!(u.mode, Mode::Normal);
         assert_eq!(u.apply(Key::Char('q'), 1), Action::Quit);
         assert_eq!(u.apply(Key::Interrupt, 1), Action::Quit);
+    }
+
+    fn hits() -> Hits {
+        Hits {
+            table: Some((10, 30, 0, 99)),
+            header_y: 11,
+            headers: vec![(2, 9, Sort::Cpu), (10, 20, Sort::Mem), (21, 40, Sort::Name)],
+            first_y: 12,
+            shown: 10,
+            scroll: 4,
+            keys_y: 30,
+            keys: vec![(3, 3, "q"), (7, 7, "↓"), (9, 13, "enter")],
+        }
+    }
+
+    fn click(x: usize, y: usize) -> Mouse {
+        Mouse {
+            click: Click::Left,
+            x,
+            y,
+        }
+    }
+
+    #[test]
+    fn sgr_mouse_reports_are_decoded() {
+        let m = |click, x, y| Some((Some(Input::Mouse(Mouse { click, x, y })), 0));
+        let got = next_input(b"\x1b[<0;12;5M").unwrap();
+        assert_eq!((got.0, got.1), (m(Click::Left, 11, 4).unwrap().0, 10));
+        assert_eq!(
+            next_input(b"\x1b[<64;1;1M").unwrap().0,
+            m(Click::WheelUp, 0, 0).unwrap().0
+        );
+        assert_eq!(
+            next_input(b"\x1b[<65;3;2M").unwrap().0,
+            m(Click::WheelDown, 2, 1).unwrap().0
+        );
+        assert_eq!(
+            next_input(b"\x1b[<2;3;2M").unwrap().0,
+            m(Click::Other, 2, 1).unwrap().0
+        );
+        // A release, a drag, and a report cut short give no input and are taken whole.
+        assert_eq!(next_input(b"\x1b[<0;12;5m"), Some((None, 10)));
+        assert_eq!(next_input(b"\x1b[<32;12;5M"), Some((None, 11)));
+        assert_eq!(next_input(b"\x1b[<0;12"), Some((None, 7)));
+        // Keys after a report are still read.
+        let both = b"\x1b[<0;1;1Mq";
+        let (_, n) = next_input(both).unwrap();
+        assert_eq!(
+            next_input(&both[n..]),
+            Some((Some(Input::Key(Key::Char('q'))), 1))
+        );
+        // Keys decode as before.
+        assert_eq!(next_input(b"\x1b[A"), Some((Some(Input::Key(Key::Up)), 3)));
+        assert_eq!(next_input(b"\x1b"), Some((Some(Input::Key(Key::Esc)), 1)));
+    }
+
+    #[test]
+    fn a_click_selects_a_row_by_the_scroll_and_two_open_its_detail() {
+        let mut u = ui();
+        let t = Instant::now();
+        u.mouse(click(5, 14), &hits(), 50, t);
+        assert_eq!(u.index, 6);
+        assert_eq!(u.mode, Mode::Normal);
+        u.mouse(click(5, 14), &hits(), 50, t + Duration::from_millis(200));
+        assert_eq!(u.mode, Mode::Detail);
+        // A click on another row is no double click, nor is a slow one.
+        let mut u = ui();
+        u.mouse(click(5, 14), &hits(), 50, t);
+        u.mouse(click(5, 15), &hits(), 50, t + Duration::from_millis(100));
+        u.mouse(click(5, 15), &hits(), 50, t + Duration::from_millis(900));
+        assert_eq!((u.index, u.mode), (7, Mode::Normal));
+        // Below the last drawn row, and outside the table: nothing.
+        u.mouse(click(5, 22), &hits(), 50, t);
+        u.mouse(click(5, 40), &hits(), 50, t);
+        assert_eq!(u.index, 7);
+    }
+
+    #[test]
+    fn a_header_sorts_and_again_reverses() {
+        let mut u = ui();
+        let t = Instant::now();
+        u.mouse(click(12, 11), &hits(), 5, t);
+        assert_eq!((u.view.by, u.view.reverse), (Sort::Mem, false));
+        u.mouse(click(12, 11), &hits(), 5, t);
+        assert_eq!((u.view.by, u.view.reverse), (Sort::Mem, true));
+        u.mouse(click(30, 11), &hits(), 5, t);
+        assert_eq!((u.view.by, u.view.reverse), (Sort::Name, false));
+        // Between headers' cells and beyond them: nothing.
+        u.mouse(click(60, 11), &hits(), 5, t);
+        assert_eq!(u.view.by, Sort::Name);
+    }
+
+    #[test]
+    fn the_wheel_moves_three_rows_over_the_table_only() {
+        let mut u = ui();
+        let t = Instant::now();
+        let wheel = |click, x, y| Mouse { click, x, y };
+        u.mouse(wheel(Click::WheelDown, 5, 20), &hits(), 20, t);
+        assert_eq!(u.index, 3);
+        u.mouse(wheel(Click::WheelDown, 5, 20), &hits(), 20, t);
+        u.mouse(wheel(Click::WheelUp, 5, 20), &hits(), 20, t);
+        assert_eq!(u.index, 3);
+        u.mouse(wheel(Click::WheelUp, 5, 20), &hits(), 20, t);
+        u.mouse(wheel(Click::WheelUp, 5, 20), &hits(), 20, t);
+        assert_eq!(u.index, 0);
+        for _ in 0..10 {
+            u.mouse(wheel(Click::WheelDown, 5, 20), &hits(), 20, t);
+        }
+        assert_eq!(u.index, 19);
+        // Over the overview above the table: nothing.
+        u.mouse(wheel(Click::WheelUp, 5, 3), &hits(), 20, t);
+        assert_eq!(u.index, 19);
+    }
+
+    #[test]
+    fn a_hint_does_what_its_key_does_and_overlays_take_no_mouse() {
+        let mut u = ui();
+        let t = Instant::now();
+        assert_eq!(u.mouse(click(3, 30), &hits(), 5, t), Action::Quit);
+        u.mouse(click(7, 30), &hits(), 5, t);
+        assert_eq!(u.index, 1);
+        u.ident = id("sleep", 7);
+        u.mouse(click(10, 30), &hits(), 5, t);
+        assert_eq!(u.mode, Mode::Detail);
+        u.mouse(click(5, 14), &hits(), 5, t);
+        u.mouse(click(12, 11), &hits(), 5, t);
+        assert_eq!((u.mode, u.view.by), (Mode::Detail, Sort::Cpu));
     }
 }

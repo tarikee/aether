@@ -41,6 +41,25 @@ pub struct Screen {
     pub prompt: Option<String>,
     /// The user names by uid, read once from the password file.
     pub users: Rc<HashMap<u32, String>>,
+    /// Where the table's rows, headers and key hints were drawn: filled by `render`.
+    pub hits: Hits,
+}
+
+/// Where things are on the last frame drawn, in screen cells counted from 0, for the mouse.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Hits {
+    /// The process table: its box, as (first row, last row, first column, last column).
+    pub table: Option<(usize, usize, usize, usize)>,
+    /// The row of the column headers, and the sort each header cell (first, last column) names.
+    pub header_y: usize,
+    pub headers: Vec<(usize, usize, Sort)>,
+    /// The first screen row of the process rows, how many are drawn, and the index of the first.
+    pub first_y: usize,
+    pub shown: usize,
+    pub scroll: usize,
+    /// The row of the key hints, and each hint's cells (first, last column) with its key's name.
+    pub keys_y: usize,
+    pub keys: Vec<(usize, usize, &'static str)>,
 }
 
 /// What the screen shows in place of the process table.
@@ -371,6 +390,7 @@ pub fn render(
 ) {
     let (cols, rows, colour) = (s.cols, s.rows, s.colour);
     let mut lines: Vec<Line> = Vec::with_capacity(rows);
+    s.hits = Hits::default();
     if rows > 0 && cols > 0 {
         let d = Data::new(r, v, hist, s);
         lines.push(title(r, s, cols, d.nets.first().copied()));
@@ -412,7 +432,19 @@ pub fn render(
             // A question with no room for its box goes into the process box's border.
             let inline = if ask == 0 { question } else { None };
             match s.overlay {
-                Overlay::Table => lines.extend(proc_box(&d, v, s, tree, rank, h, inline)),
+                Overlay::Table => {
+                    let top = lines.len();
+                    lines.extend(proc_box(&d, v, s, tree, rank, h, inline));
+                    // The box was placed from its own top: move its places to the screen's.
+                    let hits = &mut s.hits;
+                    if let Some(t) = hits.table.as_mut() {
+                        t.0 += top;
+                        t.1 += top;
+                    }
+                    hits.header_y += top;
+                    hits.first_y += top;
+                    hits.keys_y += top;
+                }
                 Overlay::Detail => lines.extend(detail_box(&d, v, s, tree, rank, h)),
                 Overlay::Help => lines.extend(help_box(cols, h, colour)),
                 Overlay::Sensors => lines.extend(sensors_page(&d, cols, h)),
@@ -2121,13 +2153,28 @@ fn proc_box(
         &facts,
         Some(&words(colour, &count, Role::Plain)),
     );
+    let mut hints = Vec::new();
     let foot = match ask {
         Some(q) => words(colour, q, Role::Warn),
-        None => key_line(s, w.saturating_sub(6), colour),
+        None => key_line(s, w.saturating_sub(6), colour, &mut hints),
     };
+    // The keys start 3 cells in from the box's left edge, when the border has room for them.
+    if 4 + foot.width + 2 <= w && h >= 3 {
+        s.hits.keys = hints
+            .into_iter()
+            .map(|(a, b, k)| (a + 3, b + 3, k))
+            .collect();
+        s.hits.keys_y = h - 1;
+    }
     let foot = bottom(w, colour, Some(&foot), None);
     let inner = w.saturating_sub(2);
     let c = proc_columns(inner, w >= 120, !grouped, v.by, grouped);
+    if h >= 3 && w >= 3 {
+        s.hits.header_y = 1;
+        s.hits.headers = c.header_cells(2);
+        s.hits.first_y = 2;
+        s.hits.table = Some((0, h - 1, 0, w - 1));
+    }
     let mut body = Vec::with_capacity(h);
     body.push(c.header(inner, colour, v.by, grouped));
     let room = h.saturating_sub(3);
@@ -2141,6 +2188,8 @@ fn proc_box(
         }
     }
     let uptime = d.r.host.uptime_s;
+    s.hits.scroll = s.scroll;
+    s.hits.shown = rows.len().saturating_sub(s.scroll).min(room);
     for (i, row) in rows.iter().enumerate().skip(s.scroll).take(room) {
         let mut l = Line::new(inner, colour);
         let sel = s.selected == Some(i);
@@ -2169,7 +2218,12 @@ fn proc_box(
 
 /// The keys for the process box's bottom border, as many as fit in `room`, `? help` always;
 /// the filter being typed in their place; without keys, how to leave.
-fn key_line(s: &Screen, room: usize, colour: bool) -> Line {
+fn key_line(
+    s: &Screen,
+    room: usize,
+    colour: bool,
+    hints: &mut Vec<(usize, usize, &'static str)>,
+) -> Line {
     let mut l = loose(colour);
     if let Some(p) = s.prompt.as_deref().filter(|p| p.starts_with("/ ")) {
         l.plain(p);
@@ -2190,13 +2244,32 @@ fn key_line(s: &Screen, room: usize, colour: bool) -> Line {
         if l.width > 0 {
             l.dot();
         }
-        key_item(&mut l, k);
+        hint(&mut l, k, hints);
     }
     if l.width > 0 {
         l.dot();
     }
-    key_item(&mut l, HELP_KEY);
+    hint(&mut l, HELP_KEY, hints);
     l
+}
+
+/// Adds one key hint to `l` and notes the cells of its key (the two arrows of `↑↓` and `←→`
+/// are a key each) for the mouse.
+fn hint(l: &mut Line, item: &'static str, hints: &mut Vec<(usize, usize, &'static str)>) {
+    let at = l.width;
+    let key = item.split(' ').next().unwrap_or(item);
+    let arrows: [&'static str; 2] = match key {
+        "↑↓" => ["↑", "↓"],
+        "←→" => ["←", "→"],
+        _ => [key, ""],
+    };
+    if arrows[1].is_empty() {
+        hints.push((at, at + key.chars().count() - 1, key));
+    } else {
+        hints.push((at, at, arrows[0]));
+        hints.push((at + 1, at + 1, arrows[1]));
+    }
+    key_item(l, item);
 }
 
 /// The table's columns shown, by `PROC_COLS`, and the name's cells.
@@ -2258,6 +2331,35 @@ fn proc_columns(inner: usize, wide: bool, single: bool, by: Sort, _grouped: bool
 }
 
 impl Columns {
+    /// The cells (first, last column) of each header from column `x`, with the sort it names.
+    /// A column that is not a sort key (VRAM) is left out; the name takes the rest.
+    fn header_cells(&self, mut x: usize) -> Vec<(usize, usize, Sort)> {
+        let mut out = Vec::new();
+        for (i, (_, w)) in PROC_COLS.iter().enumerate() {
+            if !self.on[i] {
+                continue;
+            }
+            let end = x + w + self.extra + 2;
+            let sort = match i {
+                0 => Some(Sort::Cpu),
+                1 => Some(Sort::Mem),
+                2 => Some(Sort::Gpu),
+                4 => Some(Sort::Disk),
+                5 => Some(Sort::Threads),
+                6 => Some(Sort::Age),
+                7 => Some(Sort::Pid),
+                8 => Some(Sort::User),
+                _ => None,
+            };
+            if let Some(sort) = sort {
+                out.push((x, end - 1, sort));
+            }
+            x = end;
+        }
+        out.push((x, x + self.name_w.max(1) - 1, Sort::Name));
+        out
+    }
+
     /// The header: the labels dim, the sorted one in accent.
     fn header(&self, inner: usize, colour: bool, by: Sort, grouped: bool) -> Line {
         let mut l = Line::new(inner, colour);
@@ -2788,6 +2890,7 @@ mod tests {
             keys: true,
             prompt: None,
             users: Rc::default(),
+            hits: Hits::default(),
         }
     }
 
@@ -3000,6 +3103,7 @@ mod tests {
         Screen {
             selected: Some(2),
             users: Rc::clone(users),
+            hits: Hits::default(),
             ..screen(cols, rows, colour)
         }
     }
@@ -3255,6 +3359,79 @@ mod tests {
         let r = sample(12, vec![proc(1, "init", 0.0, 1 << 20)]);
         let f = lines_of(&frame(&r, &view(), &screen(200, 50, false)));
         assert!(f.iter().any(|l| l.contains(" 11 ") && l.contains("77%")));
+    }
+
+    #[test]
+    fn the_hits_say_where_the_headers_rows_and_hints_were_drawn() {
+        let procs = (1..=60)
+            .map(|i| proc(i, &format!("job{i:02}"), 60.0 - i as f32, 1 << 20))
+            .collect();
+        let r = sample(4, procs);
+        let mut s = screen(120, 40, false);
+        s.selected = Some(0);
+        let mut hist = History::default();
+        hist.push(&r);
+        let mut tree = Tree::new();
+        let rank = |p: &Proc| f64::from(p.cpu_pct.unwrap_or(-1.0));
+        let mut out = Vec::new();
+        render(&mut out, &r, &view(), &mut s, &hist, &mut tree, &rank);
+        let lines = lines_of(&String::from_utf8(out).unwrap());
+        let h = s.hits.clone();
+        let cells_of = |y: usize, a: usize, b: usize| -> String {
+            lines[y].chars().skip(a).take(b + 1 - a).collect()
+        };
+        // The header line holds the label of each header's cells.
+        assert!(lines[h.header_y].contains("CPU"));
+        for (a, b, sort) in &h.headers {
+            let text = cells_of(h.header_y, *a, *b);
+            let word = match sort {
+                Sort::Cpu => "CPU",
+                Sort::Mem => "MEM",
+                Sort::Gpu => "GPU",
+                Sort::Disk => "DISK",
+                Sort::Threads => "THR",
+                Sort::Age => "AGE",
+                Sort::Pid => "PID",
+                Sort::User => "USER",
+                Sort::Name => "APP",
+            };
+            assert!(text.contains(word), "{word} in {text:?}");
+        }
+        // The first row is the marked one, and each row after it is the next process.
+        assert!(lines[h.first_y].contains("▸"));
+        assert!(lines[h.first_y].contains("job01"));
+        assert!(lines[h.first_y + 1].contains("job02"));
+        assert_eq!(h.scroll, 0);
+        assert!(h.shown > 5 && h.first_y + h.shown < 40);
+        // The hints: each key is where it says.
+        assert!(lines[h.keys_y].contains("q quit"));
+        let q = h.keys.iter().find(|k| k.2 == "q").unwrap();
+        assert_eq!(cells_of(h.keys_y, q.0, q.1), "q");
+        let e = h.keys.iter().find(|k| k.2 == "enter");
+        assert_eq!(cells_of(h.keys_y, e.unwrap().0, e.unwrap().1), "enter");
+        let help = h.keys.iter().find(|k| k.2 == "?").unwrap();
+        assert_eq!(cells_of(h.keys_y, help.0, help.1), "?");
+        assert_eq!(h.table.map(|t| (t.2, t.3)), Some((0, 119)));
+    }
+
+    #[test]
+    fn a_scrolled_table_names_its_first_row() {
+        let procs = (1..=60)
+            .map(|i| proc(i, &format!("job{i:02}"), 60.0 - i as f32, 1 << 20))
+            .collect();
+        let r = sample(4, procs);
+        let mut s = screen(120, 40, false);
+        s.selected = Some(50);
+        let mut hist = History::default();
+        hist.push(&r);
+        let mut tree = Tree::new();
+        let rank = |p: &Proc| f64::from(p.cpu_pct.unwrap_or(-1.0));
+        let mut out = Vec::new();
+        render(&mut out, &r, &view(), &mut s, &hist, &mut tree, &rank);
+        let lines = lines_of(&String::from_utf8(out).unwrap());
+        assert!(s.hits.scroll > 0);
+        let first = format!("job{:02}", s.hits.scroll + 1);
+        assert!(lines[s.hits.first_y].contains(&first));
     }
 
     #[test]
