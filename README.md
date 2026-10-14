@@ -117,7 +117,7 @@ is `null`, never 0. Rates and percentages that need two readings are `null` unti
 | `gpus` | list: `name`, `vendor`, `pct`, `temp_c`, `power_w`, `vram_used`, `vram_total` (bytes), `fan_rpm` |
 | `sensors` | list: `chip`, `label`, `kind` (temp, fan or power), `value` |
 | `disks` | list: `mount`, `dev`, `total`, `used` (bytes), `read_bps`, `write_bps`, `busy_pct` |
-| `nets` | list: `name`, `rx_bps`, `tx_bps`, `addrs` |
+| `nets` | list: `name`, `rx_bps`, `tx_bps`, `link_bps`, `addrs` |
 | `battery` | `pct`, `state`, `power_w`, `minutes_left`; `null` when there is no battery |
 | `host` | `uptime_s`, `threads` |
 | `procs` | list: `pid`, `ppid`, `uid`, `threads`, `name`, `state`, `cpu_pct`, `gpu_pct`, `mem`, `rss`, `started_s`, `vram`, `read_bps`, `write_bps` |

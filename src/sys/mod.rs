@@ -140,6 +140,8 @@ pub struct NetSample {
     pub name: String,
     pub rx_bps: Option<u64>,
     pub tx_bps: Option<u64>,
+    /// The link speed in bits per second, when the system says it.
+    pub link_bps: Option<u64>,
     /// The IPv4 and IPv6 addresses (not link-local); empty when not read.
     pub addrs: Vec<String>,
 }

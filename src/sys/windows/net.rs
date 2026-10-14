@@ -47,7 +47,9 @@ impl Nets {
             .iter()
             .zip(self.list.iter_mut().zip(self.last.iter_mut()))
         {
-            let counts = calls::octets(*index);
+            let read = calls::octets(*index);
+            let counts = read.map(|c| (c.0, c.1));
+            sample.link_bps = read.and_then(|c| c.2);
             (sample.rx_bps, sample.tx_bps) = match (*last, counts, seconds) {
                 (Some(a), Some(b), Some(s)) if s > 0.0 => (
                     Some((b.0.saturating_sub(a.0) as f64 / s) as u64),
@@ -70,6 +72,7 @@ impl Nets {
                     name: name.clone(),
                     rx_bps: None,
                     tx_bps: None,
+                    link_bps: None,
                     addrs: Vec::new(),
                 }));
             self.last.clear();
@@ -109,6 +112,7 @@ mod tests {
             name: "Ethernet".into(),
             rx_bps: None,
             tx_bps: None,
+            link_bps: None,
             addrs: Vec::new(),
         }];
         let ifaces = [(7, "Ethernet".to_string())];

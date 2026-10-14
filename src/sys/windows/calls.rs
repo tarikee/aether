@@ -713,14 +713,16 @@ pub fn interfaces(out: &mut Vec<(u32, String)>) -> bool {
     true
 }
 
-/// An interface's bytes received and sent.
-pub fn octets(index: u32) -> Option<(u64, u64)> {
+/// An interface's bytes received and sent, and its link speed in bits per second.
+pub fn octets(index: u32) -> Option<(u64, u64, Option<u64>)> {
     // SAFETY: an all-zero MIB_IF_ROW2 is valid; the call fills it.
     let mut row: MIB_IF_ROW2 = unsafe { zeroed() };
     row.InterfaceIndex = index;
     // SAFETY: a valid in-out pointer.
     let ok = unsafe { GetIfEntry2(&mut row) } == NO_ERROR;
-    ok.then_some((row.InOctets, row.OutOctets))
+    let speed = row.ReceiveLinkSpeed.max(row.TransmitLinkSpeed);
+    let link = (speed != 0 && speed != u64::MAX).then_some(speed);
+    ok.then_some((row.InOctets, row.OutOctets, link))
 }
 
 fn socket_ip(sa: *const SOCKADDR, len: i32) -> Option<IpAddr> {

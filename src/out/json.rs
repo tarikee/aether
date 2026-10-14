@@ -283,6 +283,7 @@ fn net(out: &mut Vec<u8>, n: &NetSample) {
     o.text("name", &n.name);
     o.int("rx_bps", n.rx_bps);
     o.int("tx_bps", n.tx_bps);
+    o.int("link_bps", n.link_bps);
     o.key("addrs");
     array_of(o.out, n.addrs.iter(), addr_each);
     o.close();

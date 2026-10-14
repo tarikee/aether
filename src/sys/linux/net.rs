@@ -60,6 +60,7 @@ impl Nets {
         self.ticks = self.ticks.wrapping_add(1);
         if self.ticks.is_multiple_of(30) {
             self.refresh_addrs();
+            self.refresh_links();
         }
         for (s, i) in self
             .list
@@ -125,6 +126,16 @@ impl Nets {
         attach(&mut self.list, &self.addrs);
     }
 
+    /// Reads each listed interface's link speed again (every 30th reading).
+    fn refresh_links(&mut self) {
+        for s in &mut self.list {
+            let path = self.net_dir.join(&s.name).join("speed");
+            s.link_bps = std::fs::read_to_string(path)
+                .ok()
+                .and_then(|t| link_bps(&t));
+        }
+    }
+
     /// Rebuilds the list only when the physical interfaces present have changed.
     fn sync_list(&mut self) {
         let same = self
@@ -142,12 +153,23 @@ impl Nets {
                     name: i.name.clone(),
                     rx_bps: None,
                     tx_bps: None,
+                    link_bps: None,
                     addrs: Vec::new(),
                 })
                 .collect();
             attach(&mut self.list, &self.addrs);
+            self.refresh_links();
         }
     }
+}
+
+/// The text of sys/class/net/<if>/speed (Mbit/s; -1 when unknown) as bits per second.
+fn link_bps(text: &str) -> Option<u64> {
+    let mbit: i64 = text.trim().parse().ok()?;
+    u64::try_from(mbit)
+        .ok()
+        .filter(|&m| m > 0)
+        .map(|m| m * 1_000_000)
 }
 
 /// Gives each listed interface the addresses the system reported for it.
@@ -201,18 +223,28 @@ mod tests {
     }
 
     #[test]
+    fn the_link_speed_is_megabits_and_an_error_is_none() {
+        assert_eq!(link_bps("1000\n"), Some(1_000_000_000));
+        assert_eq!(link_bps("-1\n"), None);
+        assert_eq!(link_bps("0"), None);
+        assert_eq!(link_bps("x"), None);
+    }
+
+    #[test]
     fn addresses_are_attached_by_name_and_not_read_under_a_fixture() {
         let mut list = vec![
             NetSample {
                 name: "enp3s0".into(),
                 rx_bps: None,
                 tx_bps: None,
+                link_bps: None,
                 addrs: Vec::new(),
             },
             NetSample {
                 name: "wlan0".into(),
                 rx_bps: None,
                 tx_bps: None,
+                link_bps: None,
                 addrs: Vec::new(),
             },
         ];

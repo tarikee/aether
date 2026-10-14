@@ -373,7 +373,7 @@ pub fn render(
     let mut lines: Vec<Line> = Vec::with_capacity(rows);
     if rows > 0 && cols > 0 {
         let d = Data::new(r, v, hist, s);
-        lines.push(title(r, s, cols));
+        lines.push(title(r, s, cols, d.nets.first().copied()));
         let question = s.prompt.clone().filter(|p| !p.starts_with("/ "));
         let question = question.as_deref();
         let lower = v.shows("procs") || s.overlay != Overlay::Table;
@@ -1071,34 +1071,176 @@ fn more(colour: bool, n: usize) -> Option<Line> {
     (n > 0).then(|| words(colour, &format!("+{n} more"), Role::Dim))
 }
 
-/// The first line: the name on the left; on the right the battery (when there is one and it
-/// fits), the uptime, the threads, `paused` and the interval.
-fn title(r: &Reading, s: &Screen, cols: usize) -> Line {
-    let colour = s.colour;
-    let mut right = loose(colour);
-    right.plain(&uptime_short(r.host.uptime_s));
-    right.dot();
-    right.plain(&format!("{} threads", r.host.threads));
+/// The columns from which each overview item gets a meter bar, and the bar's cells.
+const OVERVIEW_BARS: usize = 140;
+const OVERVIEW_CELLS: usize = 6;
+
+/// How busy the first network interface is: a share of its link, or the plain rate when the
+/// link speed is not known.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum NetLoad {
+    Pct(f32),
+    Rate(u64),
+}
+
+/// The larger of the two directions, as a percent of the link speed (bits against bits) or,
+/// without a link speed, as a rate. `None` when no rate is read.
+fn net_load(n: &aether::sys::NetSample) -> Option<NetLoad> {
+    let rate = match (n.rx_bps, n.tx_bps) {
+        (None, None) => return None,
+        (a, b) => a.unwrap_or(0).max(b.unwrap_or(0)),
+    };
+    match n.link_bps.filter(|&l| l > 0) {
+        Some(link) => Some(NetLoad::Pct(
+            (rate as f64 * 8.0 / link as f64 * 100.0) as f32,
+        )),
+        None => Some(NetLoad::Rate(rate)),
+    }
+}
+
+/// A percentage with one decimal under 10 and none from 10, the sign not included.
+fn pct_short(x: f32) -> String {
+    if x < 9.95 {
+        format!("{x:.1}")
+    } else {
+        format!("{x:.0}")
+    }
+}
+
+/// One overview item: the label dim, a bar when asked for, the number in its role.
+fn overview_item(l: &mut Line, label: &str, load: NetLoad, bars: bool) {
+    l.push(label, Role::Dim);
+    l.push(" ", Role::Plain);
+    match load {
+        NetLoad::Pct(p) => {
+            let role = load_role(p);
+            if bars {
+                bar(l, p / 100.0, OVERVIEW_CELLS, role);
+                l.push(" ", Role::Plain);
+            }
+            l.measure(&pct_short(p), "%", role);
+        }
+        NetLoad::Rate(b) => size_item(l, b, "/s", Role::Plain),
+    }
+}
+
+/// The overview: CPU, GPU, RAM and network, as far as each is read. `gpu` and `net` are the
+/// items still allowed.
+fn overview(
+    r: &Reading,
+    net: Option<&aether::sys::NetSample>,
+    colour: bool,
+    bars: bool,
+    gpu: bool,
+    netw: bool,
+) -> Line {
+    let mut items: Vec<(&str, NetLoad)> = Vec::new();
+    if let Some(p) = r.cpu.pct {
+        items.push(("CPU", NetLoad::Pct(p)));
+    }
+    if gpu {
+        if let Some(p) = r.gpus.first().and_then(|g| g.pct) {
+            items.push(("GPU", NetLoad::Pct(p)));
+        }
+    }
+    if r.mem.total > 0 {
+        let p = r.mem.used as f64 / r.mem.total as f64 * 100.0;
+        items.push(("RAM", NetLoad::Pct(p as f32)));
+    }
+    if netw {
+        if let Some(load) = net.and_then(net_load) {
+            items.push(("NET", load));
+        }
+    }
+    let mut l = loose(colour);
+    for (i, (label, load)) in items.into_iter().enumerate() {
+        if i > 0 {
+            l.gap(3);
+        }
+        overview_item(&mut l, label, load, bars);
+    }
+    l
+}
+
+/// The right part: uptime, threads, `paused`, interval, each as far as it is kept.
+fn title_right(r: &Reading, s: &Screen, up: bool, threads: bool, interval: bool) -> Line {
+    let mut right = loose(s.colour);
+    let mut first = true;
+    let mut sep = |l: &mut Line| {
+        if !first {
+            l.dot();
+        }
+        first = false;
+    };
+    if up {
+        sep(&mut right);
+        right.plain(&uptime_short(r.host.uptime_s));
+    }
+    if threads {
+        sep(&mut right);
+        right.plain(&format!("{} threads", r.host.threads));
+    }
     if s.paused {
-        right.dot();
+        sep(&mut right);
         right.push("paused", Role::Warn);
     }
-    right.dot();
-    right.measure(&format!("{:.1}", s.interval_s), " s", Role::Plain);
+    if interval {
+        sep(&mut right);
+        right.measure(&format!("{:.1}", s.interval_s), " s", Role::Plain);
+    }
+    right
+}
+
+/// The first line: the name, the overview of CPU, GPU, RAM and network; on the right the
+/// battery (when there is one and it fits), the uptime, the threads, `paused` and the interval.
+/// When it is too narrow it gives up the bars, the interval, the threads, the uptime, the
+/// network and the GPU, in that order; CPU and RAM stay.
+fn title(r: &Reading, s: &Screen, cols: usize, net: Option<&aether::sys::NetSample>) -> Line {
+    let colour = s.colour;
+    let brand = 1 + 6 + 3;
+    // (bars, interval, threads, uptime, network, gpu)
+    let steps = [
+        (true, true, true, true, true, true),
+        (false, true, true, true, true, true),
+        (false, false, true, true, true, true),
+        (false, false, false, true, true, true),
+        (false, false, false, false, true, true),
+        (false, false, false, false, false, true),
+        (false, false, false, false, false, false),
+    ];
+    let mut chosen = None;
+    for (bars, interval, threads, up, netw, gpu) in steps {
+        let bars = bars && cols >= OVERVIEW_BARS;
+        let o = overview(r, net, colour, bars, gpu, netw);
+        let right = title_right(r, s, up, threads, interval);
+        let need = brand + o.width + if right.width > 0 { 3 + right.width } else { 0 } + 1;
+        let fits = need <= cols;
+        chosen = Some((o, right));
+        if fits {
+            break;
+        }
+    }
+    let Some((over, right)) = chosen else {
+        return Line::new(cols, colour);
+    };
     let mut bat = loose(colour);
     if let Some(b) = &r.battery {
         battery_text(&mut bat, b);
     }
-    let brand = 1 + 6 + 2;
-    let with_bat = bat.width > 0 && brand + bat.width + 3 + right.width < cols;
+    let used = brand + over.width + if right.width > 0 { 3 + right.width } else { 0 } + 1;
+    let with_bat = bat.width > 0 && used + bat.width + 3 <= cols;
     let tail = right.width + 1 + if with_bat { bat.width + 3 } else { 0 };
     let mut l = Line::new(cols, colour);
     l.gap(1);
     l.push("aether", Role::Title);
+    l.gap(3);
+    l.join(&over);
     l.pad_to(cols.saturating_sub(tail));
     if with_bat {
         l.join(&bat);
-        l.dot();
+        if right.width > 0 {
+            l.dot();
+        }
     }
     l.join(&right);
     l.pad_to(cols);
@@ -2626,6 +2768,7 @@ mod tests {
             name: "eth0".to_string(),
             rx_bps: Some(3_400_000),
             tx_bps: Some(120_000),
+            link_bps: None,
             addrs: vec!["192.0.2.10".to_string()],
         });
         r.procs = procs;
@@ -2810,6 +2953,7 @@ mod tests {
             name: "wlan0".to_string(),
             rx_bps: Some(1_200),
             tx_bps: Some(0),
+            link_bps: Some(866_000_000),
             addrs: vec!["198.51.100.7".to_string()],
         });
         // Ordinary use: quiet most of the time, a few bursts, a settle, and now.
@@ -2971,6 +3115,103 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_net_overview_is_a_share_of_the_link_or_the_plain_rate() {
+        let mut n = NetSample {
+            name: "eth0".into(),
+            rx_bps: Some(12_500_000),
+            tx_bps: Some(1_000),
+            link_bps: Some(1_000_000_000),
+            addrs: Vec::new(),
+        };
+        assert_eq!(net_load(&n), Some(NetLoad::Pct(10.0)));
+        n.link_bps = None;
+        assert_eq!(net_load(&n), Some(NetLoad::Rate(12_500_000)));
+        n.link_bps = Some(1_000_000_000);
+        n.rx_bps = Some(0);
+        n.tx_bps = Some(0);
+        assert_eq!(net_load(&n), Some(NetLoad::Pct(0.0)));
+        n.rx_bps = None;
+        n.tx_bps = None;
+        assert_eq!(net_load(&n), None);
+    }
+
+    #[test]
+    fn the_first_line_gives_up_its_right_items_in_order() {
+        let mut r = sample(12, Vec::new());
+        r.gpus.push(aether::sys::GpuSample {
+            name: "g".into(),
+            vendor: "v",
+            pct: Some(7.5),
+            temp_c: None,
+            power_w: None,
+            vram_used: None,
+            vram_total: None,
+            fan_rpm: None,
+        });
+        r.nets[0].link_bps = Some(100_000_000);
+        let first = |r: &Reading, cols: usize| {
+            let f = frame(r, &view(), &screen(cols, 30, false));
+            lines_of(&f).remove(0)
+        };
+        let wide = first(&r, 200);
+        assert_eq!(wide.chars().count(), 200);
+        for want in [
+            "CPU",
+            "GPU",
+            "RAM",
+            "NET",
+            "━",
+            "23%",
+            "7.5%",
+            "62%",
+            "up 3d 04:12",
+            "12 threads",
+            "1.0 s",
+        ] {
+            assert!(wide.contains(want), "{want} in {wide}");
+        }
+        // 27.2 Mbit/s of 100 Mbit/s
+        assert!(wide.contains("27%"), "{wide}");
+        let mid = first(&r, 120);
+        assert_eq!(mid.chars().count(), 120);
+        assert!(!mid.contains('━') && !mid.contains('╌'), "{mid}");
+        for want in [
+            "CPU 23%",
+            "GPU 7.5%",
+            "RAM 62%",
+            "NET 27%",
+            "up 3d 04:12",
+            "12 threads",
+            "1.0 s",
+        ] {
+            assert!(mid.contains(want), "{want} in {mid}");
+        }
+        let narrow = first(&r, 60);
+        assert_eq!(narrow.chars().count(), 60);
+        assert!(
+            narrow.contains("CPU 23%") && narrow.contains("RAM 62%"),
+            "{narrow}"
+        );
+        for gone in ["1.0 s", "threads", "up 3d"] {
+            assert!(!narrow.contains(gone), "{gone} in {narrow}");
+        }
+        let tiny = first(&r, 35);
+        assert!(
+            tiny.contains("CPU 23%") && tiny.contains("RAM 62%"),
+            "{tiny}"
+        );
+        assert!(!tiny.contains("GPU") && !tiny.contains("NET"), "{tiny}");
+        // no link speed: the rate stands in; no GPU: left out
+        r.nets[0].link_bps = None;
+        r.gpus.clear();
+        let rate = first(&r, 120);
+        assert!(
+            rate.contains("NET 3.2 MiB/s") && !rate.contains("GPU"),
+            "{rate}"
+        );
     }
 
     #[test]
