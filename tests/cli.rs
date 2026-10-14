@@ -622,3 +622,83 @@ fn kill_sends_a_named_or_numbered_signal_and_does_not_wait() {
     assert_eq!(out.status.code(), Some(0), "kill exit status");
     let _ = child.wait();
 }
+
+/// The JSON of one reading on Windows holds the machine: threads, memory, a disk, processes.
+#[cfg(windows)]
+#[test]
+fn windows_json_holds_the_machine() {
+    let out = Command::new(BIN)
+        .args(["--once", "--json"])
+        .env("APPDATA", empty_config())
+        .output()
+        .expect("the program starts");
+    assert_eq!(out.status.code(), Some(0), "exit status");
+    let fields = object(&stdout(&out));
+    let part = |key: &str| match field(&fields, key) {
+        Some(Json::Obj(f)) => f,
+        other => panic!("{key} is not an object: {other:?}"),
+    };
+    let list = |key: &str| match field(&fields, key) {
+        Some(Json::Arr(items)) => items,
+        other => panic!("{key} is not a list: {other:?}"),
+    };
+    let num = |f: &[(String, Json)], key: &str| match field(f, key) {
+        Some(Json::Num(n)) => *n,
+        other => panic!("{key} is not a number: {other:?}"),
+    };
+    assert!(num(part("host"), "threads") > 0.0);
+    let mem = part("mem");
+    assert!(num(mem, "total") > num(mem, "used") && num(mem, "used") > 0.0);
+    assert!(!list("disks").is_empty(), "a disk");
+    assert!(list("procs").len() > 10, "processes");
+    assert_eq!(
+        field(part("cpu"), "load"),
+        Some(&Json::Null),
+        "no load average"
+    );
+}
+
+/// `kill --force` ends a console program it starts; a signal Windows does not have is refused.
+#[cfg(windows)]
+#[test]
+fn windows_kill_ends_a_ping_and_refuses_other_signals() {
+    let mut child = Command::new("ping")
+        .args(["-n", "30", "127.0.0.1"])
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .expect("ping starts");
+    let pid = child.id().to_string();
+    let out = Command::new(BIN)
+        .args(["kill", "--force", &pid])
+        .output()
+        .expect("the program starts");
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert!(child.wait().is_ok());
+
+    let out = Command::new(BIN)
+        .args(["kill", "-s", "HUP", &pid])
+        .output()
+        .expect("the program starts");
+    assert_eq!(out.status.code(), Some(2));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("TERM") && err.contains("KILL"), "{err}");
+}
+
+/// `check` and `proc` answer on Windows.
+#[cfg(windows)]
+#[test]
+fn windows_check_and_proc_answer() {
+    let out = Command::new(BIN)
+        .arg("check")
+        .output()
+        .expect("the program starts");
+    assert_eq!(out.status.code(), Some(0));
+    assert!(stdout(&out).contains("calls"));
+    let me = std::process::id().to_string();
+    let out = Command::new(BIN)
+        .args(["proc", &me])
+        .output()
+        .expect("the program starts");
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert!(stdout(&out).contains(".exe"), "{}", stdout(&out));
+}

@@ -8,9 +8,14 @@ pub mod linux;
 #[cfg(target_os = "linux")]
 pub use linux::*;
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(windows)]
+pub mod windows;
+#[cfg(windows)]
+pub use windows::*;
+
+#[cfg(not(any(target_os = "linux", windows)))]
 mod unbuilt;
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", windows)))]
 pub use unbuilt::*;
 
 /// Where the OS files are read from: `/`, or `$AETHER_ROOT` (fixture trees in tests).

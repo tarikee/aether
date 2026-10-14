@@ -49,14 +49,24 @@ pub(crate) struct Mode {
 /// Runs the live view, or one reading with `--once`.
 pub fn run(parsed: &Parsed) -> ExitCode {
     let tty = io::stdout().is_terminal();
+    // On Windows the console takes escape codes and UTF-8 for the run and is put back after.
+    #[cfg(windows)]
+    let console = if tty {
+        aether::sys::windows::calls::console_open()
+    } else {
+        None
+    };
+    #[cfg(windows)]
+    let utf8 = console.is_some();
+    #[cfg(not(windows))]
+    let utf8 = utf8_locale();
     let root = Root::system();
     let started = Instant::now();
     let mut sources = Sources::open(&root);
     let live = !parsed.once;
     let fits =
         screen_size().is_some_and(|(rows, cols)| rows >= SCREEN_MIN.0 && cols >= SCREEN_MIN.1);
-    let full =
-        tty && live && !parsed.json && !parsed.plain && utf8_locale() && term_not_dumb() && fits;
+    let full = tty && live && !parsed.json && !parsed.plain && utf8 && term_not_dumb() && fits;
     if full {
         catch_stops();
     }
@@ -152,8 +162,15 @@ fn wait_keys(d: Duration) -> Vec<u8> {
     Vec::new()
 }
 
+/// The account names by uid, read once from the running processes' accounts.
+#[cfg(windows)]
+fn user_names(_root: &Root) -> HashMap<u32, String> {
+    aether::sys::windows::users::names()
+}
+
 /// The user names by uid, read once from the password file. A missing file gives none, and a
 /// uid with no name is shown as the number.
+#[cfg(not(windows))]
 fn user_names(root: &Root) -> HashMap<u32, String> {
     let mut names = HashMap::new();
     if let Ok(text) = std::fs::read_to_string(root.path("etc/passwd")) {
@@ -176,6 +193,7 @@ fn screen_colour(parsed: &Parsed) -> bool {
 }
 
 /// The first of LC_ALL, LC_CTYPE and LANG that is set names UTF-8.
+#[cfg(not(windows))]
 fn utf8_locale() -> bool {
     ["LC_ALL", "LC_CTYPE", "LANG"]
         .iter()
@@ -197,7 +215,13 @@ fn screen_size() -> Option<(usize, usize)> {
         .map(|(rows, cols)| (usize::from(rows), usize::from(cols)))
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(windows)]
+fn screen_size() -> Option<(usize, usize)> {
+    aether::sys::windows::calls::term_size()
+        .map(|(rows, cols)| (usize::from(rows), usize::from(cols)))
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
 fn screen_size() -> Option<(usize, usize)> {
     None
 }
@@ -207,7 +231,12 @@ fn catch_stops() {
     aether::sys::linux::calls::catch_stops();
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(windows)]
+fn catch_stops() {
+    aether::sys::windows::calls::catch_stops();
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
 fn catch_stops() {}
 
 #[cfg(target_os = "linux")]
@@ -215,7 +244,12 @@ fn stop_requested() -> bool {
     aether::sys::linux::calls::stop_requested()
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(windows)]
+fn stop_requested() -> bool {
+    aether::sys::windows::calls::stop_requested()
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
 fn stop_requested() -> bool {
     false
 }

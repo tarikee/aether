@@ -7,6 +7,7 @@ use std::io::{self, Write};
 use std::process::ExitCode;
 
 /// The files the sources read, with what they tell a person.
+#[cfg(not(windows))]
 const FILES: &[(&str, &str)] = &[
     ("CPU counters", "proc/stat"),
     ("CPU clock", "sys/devices/system/cpu/cpufreq"),
@@ -51,6 +52,23 @@ fn write_report(out: &mut dyn Write, root: &Root) -> io::Result<()> {
         };
         writeln!(out, "  {name:<12} {state}")?;
     }
+    write_files(out, root)
+}
+
+/// Windows: the system calls the sources use, and whether each answers here.
+#[cfg(windows)]
+fn write_files(out: &mut dyn Write, _root: &Root) -> io::Result<()> {
+    writeln!(out, "calls")?;
+    for (label, call, answers) in aether::sys::windows::offers() {
+        let state = if answers { "answers" } else { "no" };
+        writeln!(out, "  {label:<22} {state:<8} {call}")?;
+    }
+    Ok(())
+}
+
+/// The files the sources read, found or missing.
+#[cfg(not(windows))]
+fn write_files(out: &mut dyn Write, root: &Root) -> io::Result<()> {
     writeln!(out, "files")?;
     for (label, rel) in FILES {
         let path = root.path(rel);
@@ -71,6 +89,7 @@ fn write_report(out: &mut dyn Write, root: &Root) -> io::Result<()> {
 mod tests {
     use super::*;
 
+    #[cfg(not(windows))]
     #[test]
     fn a_tree_with_one_file_reports_it_found_and_the_rest_missing() {
         let dir = std::env::temp_dir().join(format!("aether-check-{}", std::process::id()));
@@ -93,5 +112,19 @@ mod tests {
         assert!(
             line("proc/meminfo").contains("memory") && line("proc/meminfo").contains(" missing ")
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_lists_the_calls_and_the_processes_answer() {
+        let mut out: Vec<u8> = Vec::new();
+        write_report(&mut out, &Root::system()).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("\ncalls\n"), "{text}");
+        let line = text
+            .lines()
+            .find(|l| l.contains("processes") && l.ends_with("NtQuerySystemInformation"))
+            .unwrap_or("");
+        assert!(line.contains(" answers "), "{text}");
     }
 }
