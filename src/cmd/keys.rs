@@ -121,14 +121,15 @@ fn escape(buf: &[u8]) -> (Option<Key>, usize) {
     match buf.get(1) {
         None => (Some(Key::Esc), 1),
         Some(b'[') | Some(b'O') => {
-            let end = buf
+            // A sequence cut off before its final byte gives no key.
+            let Some(end) = buf
                 .iter()
                 .skip(2)
                 .position(|c| (0x40..=0x7e).contains(c))
-                .map_or(buf.len(), |p| p + 3);
-            if end > buf.len() {
+                .map(|p| p + 3)
+            else {
                 return (None, buf.len());
-            }
+            };
             let fin = buf[end - 1];
             let params = &buf[2..end - 1];
             let key = match (fin, params) {
@@ -498,6 +499,14 @@ mod tests {
     fn a_lone_escape_is_esc_and_alt_keys_are_esc_then_the_key() {
         assert_eq!(next(b"\x1b"), Some((Some(Key::Esc), 1)));
         assert_eq!(next(b"\x1bq"), Some((Some(Key::Esc), 1)));
+    }
+
+    #[test]
+    fn a_sequence_cut_off_before_its_final_byte_gives_no_key() {
+        assert_eq!(next(b"\x1b["), Some((None, 2)));
+        assert_eq!(next(b"\x1bO"), Some((None, 2)));
+        assert_eq!(next(b"\x1b[1;5"), Some((None, 5)));
+        assert_eq!(next(b"\x1b[A"), Some((Some(Key::Up), 3)));
     }
 
     #[test]
