@@ -209,16 +209,7 @@ fn clock() -> String {
     let local = aether::sys::windows::calls::local_hms();
     #[cfg(not(any(target_os = "linux", windows)))]
     let local = utc_hms();
-    let (h, m, s) = local.unwrap_or_else(|| {
-        let d = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs());
-        (
-            (d / 3600 % 24) as u32,
-            (d / 60 % 60) as u32,
-            (d % 60) as u32,
-        )
-    });
+    let (h, m, s) = local.or_else(utc_hms).unwrap_or_default();
     format!("{h:02}:{m:02}:{s:02}")
 }
 
