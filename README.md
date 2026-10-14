@@ -16,6 +16,11 @@ programs: download the archive for your system, unpack it and run `aether`. Each
 `README.md`; `SHA256SUMS` lists their checksums.
 
 - `aether-linux-x86_64.tar.gz`: static, runs on any x86_64 Linux
+- `aether-linux-arm64.tar.gz`: static, runs on any 64-bit ARM Linux (Raspberry Pi 3 and later)
+- `aether_VERSION_amd64.deb`, `aether_VERSION_arm64.deb`: Debian, Ubuntu, Mint
+  (`sudo apt install ./aether_*.deb`)
+- `aether-VERSION-1.x86_64.rpm`, `aether-VERSION-1.aarch64.rpm`: Fedora, Nobara, openSUSE
+  (`sudo dnf install ./aether-*.rpm`)
 - `aether-windows-x86_64.zip`
 - `aether-macos-arm64.tar.gz`: Apple silicon
 - `aether-macos-x86_64.tar.gz`: Intel Macs
