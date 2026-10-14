@@ -11,8 +11,8 @@ The values in the picture are made up.
 
 ## Install
 
-Ready programs are on the [releases page](https://github.com/tarikee/aether/releases): download
-the archive for your system, unpack it and run `aether`. Each holds the program, `LICENSE` and
+Every release on the [releases page](https://github.com/tarikee/aether/releases) has ready
+programs: download the archive for your system, unpack it and run `aether`. Each holds the program, `LICENSE` and
 `README.md`; `SHA256SUMS` lists their checksums.
 
 - `aether-linux-x86_64.tar.gz`: static, runs on any x86_64 Linux
