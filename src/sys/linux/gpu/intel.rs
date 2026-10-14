@@ -211,7 +211,9 @@ mod tests {
         let _ = fs::remove_dir_all(&amd);
 
         let root = tree("found", "xe", &[("device", "0xe20b\n")]);
-        let list = super::super::Gpus::open(&Root::at(&root)).read().to_vec();
+        let list = super::super::Gpus::open(&Root::at(&root))
+            .read(None)
+            .to_vec();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].vendor, "intel");
         let _ = fs::remove_dir_all(&root);

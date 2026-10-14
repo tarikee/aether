@@ -112,6 +112,11 @@ impl Procs {
         }
     }
 
+    /// The processes of the last reading that have a PCI address, for the cards' sums.
+    pub fn gpu_shares(&self) -> &[(String, f32, u64)] {
+        self.gpu.shares()
+    }
+
     pub fn read(&mut self) -> &[Proc] {
         let now = self.clock.elapsed().as_secs_f64();
         self.read_at(now)

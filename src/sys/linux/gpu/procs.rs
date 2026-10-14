@@ -29,6 +29,8 @@ struct Fdinfo {
     ns: u64,
     vram: u64,
     cycles: Vec<Cycles>,
+    /// The PCI address of the card the client is on (`drm-pdev`), if the file has it.
+    pdev: Option<String>,
 }
 
 /// One engine class of a client: its busy and total cycles, each as far as the file showed it.
@@ -72,6 +74,8 @@ pub struct GpuProcs {
     cursor: usize,
     last: Option<Instant>,
     out: Vec<(u32, f32, u64)>,
+    /// The processes with a PCI address: (address, percent, VRAM bytes), for the cards' sums.
+    shares: Vec<(String, f32, u64)>,
     uid: u32,
     /// The one buffer every fdinfo read goes through.
     buf: Vec<u8>,
@@ -86,6 +90,7 @@ impl GpuProcs {
             cursor: 0,
             last: None,
             out: Vec::new(),
+            shares: Vec::new(),
             uid: calls::uid(),
             buf: vec![0; FDINFO_CAP],
         }
@@ -94,6 +99,11 @@ impl GpuProcs {
     /// For the given PIDs: (pid, percent, VRAM bytes). Unreadable processes are left out.
     pub fn read(&mut self, pids: &[u32]) -> &[(u32, f32, u64)] {
         self.read_at(pids, Instant::now())
+    }
+
+    /// The last reading's processes that have a PCI address: (address, percent, VRAM bytes).
+    pub fn shares(&self) -> &[(String, f32, u64)] {
+        &self.shares
     }
 
     fn read_at(&mut self, pids: &[u32], now: Instant) -> &[(u32, f32, u64)] {
@@ -137,6 +147,7 @@ impl GpuProcs {
         }
 
         self.out.clear();
+        self.shares.clear();
         for &pid in pids {
             let Some(p) = self.procs.get_mut(&pid) else {
                 continue;
@@ -144,6 +155,7 @@ impl GpuProcs {
             let mut busy: Option<u64> = None;
             let mut classes: Vec<(String, u64, u64)> = Vec::new();
             let mut vram = 0u64;
+            let mut pdev: Option<String> = None;
             p.clients.retain_mut(|c| {
                 // Dropped when the read fails, or when the number now belongs to another client.
                 let Some(info) = parse(read_into(&c.file, buf)).filter(|i| i.id == c.id) else {
@@ -157,6 +169,9 @@ impl GpuProcs {
                     class_deltas(&info.cycles, &last.cycles, &mut classes);
                 }
                 vram = vram.saturating_add(info.vram);
+                if pdev.is_none() {
+                    pdev = info.pdev.clone();
+                }
                 c.last = Some(info);
                 true
             });
@@ -173,6 +188,9 @@ impl GpuProcs {
             });
             if let Some(pct) = pct {
                 self.out.push((pid, pct, vram));
+                if let Some(pdev) = pdev {
+                    self.shares.push((pdev, pct, vram));
+                }
             }
         }
         &self.out
@@ -238,6 +256,7 @@ fn parse(buf: &[u8]) -> Option<Fdinfo> {
     let mut ns = 0u64;
     let mut vram = 0u64;
     let mut cycles: Vec<Cycles> = Vec::new();
+    let mut pdev = None;
     for line in lines(buf) {
         let Some(colon) = line.iter().position(|&b| b == b':') else {
             continue;
@@ -246,6 +265,8 @@ fn parse(buf: &[u8]) -> Option<Fdinfo> {
         let mut f = fields(rest);
         if key == b"drm-client-id" {
             id = f.next().and_then(num);
+        } else if key == b"drm-pdev" {
+            pdev = f.next().map(|v| String::from_utf8_lossy(v).into_owned());
         } else if VRAM_KEYS.contains(&key) {
             vram = vram.saturating_add(memory(&mut f).unwrap_or(0));
         } else if key.starts_with(b"drm-engine-") && !key.starts_with(b"drm-engine-capacity") {
@@ -269,6 +290,7 @@ fn parse(buf: &[u8]) -> Option<Fdinfo> {
         ns,
         vram,
         cycles,
+        pdev,
     })
 }
 

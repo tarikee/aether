@@ -35,6 +35,11 @@ pub struct Procs {
 }
 
 impl Procs {
+    /// No GPU process scan on this OS yet.
+    pub fn gpu_shares(&self) -> &[(String, f32, u64)] {
+        &[]
+    }
+
     pub fn open(_root: &Root) -> Procs {
         Procs {
             list: Vec::new(),

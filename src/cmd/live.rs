@@ -373,8 +373,13 @@ impl Sources {
         if view.shows("mem") {
             r.mem.clone_from(self.mem.read());
         }
+        // The processes are read before the cards: the Intel cards' use is their processes' sums.
+        if view.shows("procs") {
+            fill_vec(&mut r.procs, self.procs.read());
+        }
         if view.shows("gpu") {
-            fill_vec(&mut r.gpus, self.gpus.read());
+            let shares = view.shows("procs").then(|| self.procs.gpu_shares());
+            fill_vec(&mut r.gpus, self.gpus.read(shares));
         }
         if view.shows("sensors") {
             fill_vec(&mut r.sensors, self.sensors.read());
@@ -390,9 +395,6 @@ impl Sources {
         }
         if view.shows("host") {
             r.host.clone_from(self.host.read());
-        }
-        if view.shows("procs") {
-            fill_vec(&mut r.procs, self.procs.read());
         }
     }
 }

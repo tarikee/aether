@@ -33,7 +33,7 @@ impl Gpus {
         }
     }
 
-    pub fn read(&mut self) -> &[GpuSample] {
+    pub fn read(&mut self, _shares: Option<&[(String, f32, u64)]>) -> &[GpuSample] {
         if !self.found {
             self.found = true;
             let mut all = Vec::new();
@@ -173,9 +173,9 @@ mod tests {
             }
         }
         let mut gpus = Gpus::open(&Root::system());
-        gpus.read();
+        gpus.read(None);
         std::thread::sleep(std::time::Duration::from_millis(200));
-        for g in gpus.read() {
+        for g in gpus.read(None) {
             assert!(!g.name.is_empty());
             if let Some(p) = g.pct {
                 assert!((0.0..=100.0).contains(&p));
