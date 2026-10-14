@@ -11,7 +11,8 @@ use crate::out::screen::{self, Overlay, Screen};
 use crate::out::tree::Tree;
 use crate::out::{json, text};
 use aether::sys::{
-    command_line, Battery, Cpu, Disks, Gpus, Host, Mem, Nets, Proc, Procs, Root, Sensors,
+    command_line, thread_list, thread_rows, Battery, Cpu, Disks, Gpus, Host, Mem, Nets, Proc,
+    Procs, Root, Sensors, Thread, ThreadRow,
 };
 use aether::Reading;
 use std::collections::HashMap;
@@ -552,6 +553,28 @@ fn end_rows(reading: &Reading, grouped: bool, pid: Option<u32>, name: &str, forc
     }
 }
 
+/// The threads of the open detail's process, with each CPU % since its last look (the look of
+/// the same process only). Read only while the detail is open; `last` is cleared when it closes.
+fn detail_threads(
+    root: &Root,
+    pid: Option<u32>,
+    last: &mut Option<(u32, Vec<Thread>, Instant)>,
+) -> Vec<ThreadRow> {
+    let now = pid.and_then(|pid| thread_list(root, pid).map(|list| (pid, list)));
+    let Some((pid, now)) = now else {
+        *last = None;
+        return Vec::new();
+    };
+    let rows = match last.take() {
+        Some((prev, before, at)) if prev == pid => {
+            thread_rows(&before, &now, at.elapsed().as_secs_f64())
+        }
+        _ => thread_rows(&[], &now, 0.0),
+    };
+    *last = Some((pid, now, Instant::now()));
+    rows
+}
+
 /// Puts the processes a reading shows into `reading.procs`: all of them, or those the filter
 /// keeps. While a filter is on, the whole list is kept in `full`, so a key that changes the
 /// filter needs no new reading. `fresh` says `reading.procs` holds a new reading's list.
@@ -640,6 +663,7 @@ fn draw(
     let mut at = Instant::now();
     let mut readings = 0u32;
     let mut last_rows = 0usize;
+    let mut thread_look: Option<(u32, Vec<Thread>, Instant)> = None;
     loop {
         if stop() {
             return Ok(());
@@ -705,8 +729,15 @@ fn draw(
             state.overlay = ui.overlay();
             state.interval_s = ui.interval_s;
             state.prompt = prompt(&ui);
+            let threads = if state.overlay == Overlay::Detail {
+                let pid = listed.get(ui.index).and_then(|r| r.pid);
+                detail_threads(&root, pid, &mut thread_look)
+            } else {
+                thread_look = None;
+                Vec::new()
+            };
             screen::render(
-                &mut buf, &reading, &ui.view, &mut state, &hist, &mut tree, &rank,
+                &mut buf, &reading, &ui.view, &mut state, &hist, &mut tree, &rank, &threads,
             );
         } else {
             if live && mode.tty && !parsed.json {

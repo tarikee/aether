@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use super::calls;
 use super::reader::{fields, lines, num, read_into, value_of};
 use super::GpuProcs;
-use crate::sys::{EndError, Proc, ProcDetail, Root};
+use crate::sys::{EndError, Proc, ProcDetail, Root, Thread};
 
 /// The one buffer every per-process read goes through (the largest file is `stat`).
 const SCRATCH: usize = 1024;
@@ -546,6 +546,35 @@ pub fn detail(root: &Root, pid: u32) -> Option<ProcDetail> {
     })
 }
 
+/// The threads of one process, from `proc/PID/task/TID/stat`. A thread that has gone while the
+/// list was read is left out; `None` when the task list itself cannot be read.
+pub fn thread_list(root: &Root, pid: u32) -> Option<Vec<Thread>> {
+    let tasks = fs::read_dir(root.path(&format!("proc/{pid}/task"))).ok()?;
+    let mut threads = Vec::new();
+    for entry in tasks.flatten() {
+        let Some(tid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|s| s.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let Some(st) = fs::read(entry.path().join("stat"))
+            .ok()
+            .and_then(|raw| parse_stat(&raw).map(|st| (st.name.to_vec(), st.state, st.ticks)))
+        else {
+            continue;
+        };
+        threads.push(Thread {
+            tid,
+            name: Some(String::from_utf8_lossy(&st.0).into_owned()),
+            state: Some(st.1),
+            cpu_s: Some(st.2 as f64 / calls::ticks_per_second() as f64),
+        });
+    }
+    Some(threads)
+}
+
 fn link_text(path: &Path) -> Option<String> {
     fs::read_link(path)
         .ok()
@@ -626,6 +655,38 @@ pub fn end(pid: u32, force: bool) -> Result<(), EndError> {
 mod tests {
     use super::*;
     use std::process::Command;
+
+    #[test]
+    fn threads_come_from_the_task_stat_files() {
+        let base = std::env::temp_dir().join(format!("aether-threads-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let stats = [
+            (
+                7u32,
+                "7 (main app) S 1 7 7 0 -1 0 0 0 0 0 150 50 0 0 20 0 4 0 1 0 0 0 0 0 0",
+            ),
+            (
+                8,
+                "8 (worker) R 1 7 7 0 -1 0 0 0 0 0 20 5 0 0 20 0 4 0 1 0 0 0 0 0 0",
+            ),
+        ];
+        for (tid, line) in stats {
+            let dir = base.join(format!("proc/42/task/{tid}"));
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("stat"), line).unwrap();
+        }
+        let mut threads = thread_list(&Root::at(&base), 42).unwrap();
+        let _ = fs::remove_dir_all(&base);
+        threads.sort_by_key(|t| t.tid);
+        let per_s = calls::ticks_per_second() as f64;
+        assert_eq!(threads.len(), 2);
+        assert_eq!(threads[0].name.as_deref(), Some("main app"));
+        assert_eq!(threads[0].state, Some(b'S'));
+        assert_eq!(threads[0].cpu_s, Some(200.0 / per_s));
+        assert_eq!(threads[1].name.as_deref(), Some("worker"));
+        assert_eq!(threads[1].cpu_s, Some(25.0 / per_s));
+        assert!(thread_list(&Root::at(&base), 42).is_none());
+    }
 
     fn fixture(name: &str) -> Root {
         Root::at(

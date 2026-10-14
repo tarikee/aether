@@ -22,7 +22,7 @@ pub use gpu::{GpuProcs, Gpus};
 pub use host::Host;
 pub use mem::Mem;
 pub use net::Nets;
-pub use procs::{command_line, detail, end, Procs};
+pub use procs::{command_line, detail, end, thread_list, Procs};
 pub use reader::{fields, lines, num, value_of, PFile};
 pub use sensors::Sensors;
 pub use sockets::{attach_owners, read_sockets};

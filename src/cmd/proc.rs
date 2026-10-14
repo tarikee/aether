@@ -2,9 +2,11 @@
 
 use crate::cli::Parsed;
 use crate::cmd::live::finish;
-use aether::sys::{detail, Proc, ProcDetail, Procs, Root};
+use aether::sys::{detail, thread_list, thread_rows, Proc, ProcDetail, Procs, Root, ThreadRow};
 use std::io::{self, Write};
 use std::process::ExitCode;
+use std::thread::sleep;
+use std::time::{Duration, Instant};
 
 /// Prints one process in full.
 pub fn run(parsed: &Parsed) -> ExitCode {
@@ -24,8 +26,14 @@ pub fn run(parsed: &Parsed) -> ExitCode {
         eprintln!("aether: no process {pid}");
         return ExitCode::FAILURE;
     };
+    // The CPU % of each thread is over one second between two looks.
+    let first = thread_list(&root, pid).unwrap_or_default();
+    let began = Instant::now();
+    sleep(Duration::from_secs(1));
+    let threads =
+        thread_list(&root, pid).map(|now| thread_rows(&first, &now, began.elapsed().as_secs_f64()));
     let mut out = io::stdout().lock();
-    finish(write_detail(&mut out, pid, &name, &d))
+    finish(write_detail(&mut out, pid, &name, &d, threads.as_deref()))
 }
 
 /// The process a target names: a PID as it is, or the one process with that name.
@@ -79,7 +87,13 @@ pub(crate) fn named(procs: &[Proc], name: &str) -> Vec<(u32, String)> {
 }
 
 /// Writes the detail, one labelled line each. A missing value is "-".
-fn write_detail(out: &mut dyn Write, pid: u32, name: &str, d: &ProcDetail) -> io::Result<()> {
+fn write_detail(
+    out: &mut dyn Write,
+    pid: u32,
+    name: &str,
+    d: &ProcDetail,
+    threads: Option<&[ThreadRow]>,
+) -> io::Result<()> {
     writeln!(out, "pid        {pid}")?;
     if !name.is_empty() {
         writeln!(out, "name       {name}")?;
@@ -98,6 +112,32 @@ fn write_detail(out: &mut dyn Write, pid: u32, name: &str, d: &ProcDetail) -> io
     };
     writeln!(out, "parents    {parents}")?;
     writeln!(out, "cpu time   {:.2} s", d.cpu_s)?;
+    match threads {
+        None => writeln!(out, "threads    -")?,
+        Some(rows) => {
+            writeln!(out, "threads    {}", rows.len())?;
+            writeln!(
+                out,
+                "  {:<8} {:<16} {:<3} {:>7}",
+                "tid", "name", "st", "cpu"
+            )?;
+            for row in rows {
+                let t = &row.thread;
+                let state = t
+                    .state
+                    .map_or("-".to_string(), |s| char::from(s).to_string());
+                let cpu = row.cpu_pct.map_or("-".to_string(), |p| format!("{p:.1} %"));
+                writeln!(
+                    out,
+                    "  {:<8} {:<16} {:<3} {:>7}",
+                    t.tid,
+                    t.name.as_deref().unwrap_or("-"),
+                    state,
+                    cpu
+                )?;
+            }
+        }
+    }
     let files = d.open_files.map_or("-".to_string(), |n| n.to_string());
     writeln!(out, "open files {files}")
 }
@@ -137,6 +177,48 @@ mod tests {
     }
 
     #[test]
+    fn threads_are_listed_one_row_each_with_dashes_for_missing_values() {
+        use aether::sys::Thread;
+        let d = ProcDetail {
+            cmdline: None,
+            exe: None,
+            cwd: None,
+            parents: vec![],
+            cpu_s: 0.0,
+            open_files: None,
+        };
+        let rows = vec![
+            ThreadRow {
+                thread: Thread {
+                    tid: 7,
+                    name: Some("main".to_string()),
+                    state: Some(b'S'),
+                    cpu_s: Some(1.0),
+                },
+                cpu_pct: Some(12.5),
+            },
+            ThreadRow {
+                thread: Thread {
+                    tid: 9,
+                    name: None,
+                    state: None,
+                    cpu_s: None,
+                },
+                cpu_pct: None,
+            },
+        ];
+        let mut out: Vec<u8> = Vec::new();
+        write_detail(&mut out, 42, "app", &d, Some(&rows)).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("threads    2\n"));
+        assert!(text.contains("  7 "));
+        assert!(text.contains("main"));
+        assert!(text.contains("12.5 %\n"));
+        assert!(text.contains("  9 "));
+        assert!(text.ends_with("open files -\n"));
+    }
+
+    #[test]
     fn a_full_detail_is_written_with_dashes_for_missing_values() {
         let d = ProcDetail {
             cmdline: None,
@@ -147,7 +229,7 @@ mod tests {
             open_files: Some(4),
         };
         let mut out: Vec<u8> = Vec::new();
-        write_detail(&mut out, 42, "sleep", &d).unwrap();
+        write_detail(&mut out, 42, "sleep", &d, None).unwrap();
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("name       sleep\n"));
         assert!(text.contains("command    -\n"));

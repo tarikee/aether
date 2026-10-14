@@ -11,7 +11,7 @@ use super::history::{History, Ring};
 use super::text::{self, Row};
 use super::tree::Tree;
 use crate::cli::{Sort, View};
-use aether::sys::{BatterySample, DiskSample, GpuSample, Proc, Sensor, SensorKind};
+use aether::sys::{BatterySample, DiskSample, GpuSample, Proc, Sensor, SensorKind, ThreadRow};
 use aether::Reading;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -379,6 +379,7 @@ fn cut_middle(s: &str, n: usize) -> String {
 
 /// Draws one frame into `out`: the synchronised-output marks, the cursor home, each line ended
 /// with erase-to-end-of-line. `s` keeps the scroll that keeps the marker in view.
+#[allow(clippy::too_many_arguments)]
 pub fn render(
     out: &mut Vec<u8>,
     r: &Reading,
@@ -387,6 +388,7 @@ pub fn render(
     hist: &History,
     tree: &mut Tree,
     rank: &dyn Fn(&Proc) -> f64,
+    threads: &[ThreadRow],
 ) {
     let (cols, rows, colour) = (s.cols, s.rows, s.colour);
     let mut lines: Vec<Line> = Vec::with_capacity(rows);
@@ -445,7 +447,7 @@ pub fn render(
                     hits.first_y += top;
                     hits.keys_y += top;
                 }
-                Overlay::Detail => lines.extend(detail_box(&d, v, s, tree, rank, h)),
+                Overlay::Detail => lines.extend(detail_box(&d, v, s, tree, rank, threads, h)),
                 Overlay::Help => lines.extend(help_box(cols, h, colour)),
                 Overlay::Sensors => lines.extend(sensors_page(&d, cols, h)),
             }
@@ -2446,6 +2448,7 @@ fn detail_box(
     s: &Screen,
     tree: &mut Tree,
     rank: &dyn Fn(&Proc) -> f64,
+    threads: &[ThreadRow],
     h: usize,
 ) -> Vec<Line> {
     let (w, colour) = (s.cols, d.colour);
@@ -2457,6 +2460,8 @@ fn detail_box(
     if let Some(row) = row {
         facts.push(words(colour, &row.name, Role::Plain));
         body = detail_lines(row, cw, colour, &s.users, d.r.host.uptime_s);
+        let room = h.saturating_sub(2).saturating_sub(body.len());
+        body.extend(thread_lines(threads, room, cw, colour));
     }
     let back = key_items(&["enter back", "esc back"], colour);
     let foot = bottom(w, colour, Some(&back), None);
@@ -2530,6 +2535,50 @@ fn detail_lines(
     let mut name = Line::new(cw, colour);
     pair(&mut name, "name", &row.name);
     vec![ids, nums, io, name]
+}
+
+/// The threads of the open process, in the lines the detail has left: a header, then one row
+/// each, most CPU first; `+N more` on the last line when they do not all fit.
+fn thread_lines(threads: &[ThreadRow], room: usize, cw: usize, colour: bool) -> Vec<Line> {
+    if room == 0 || threads.is_empty() {
+        return Vec::new();
+    }
+    let header = room > 1;
+    let rows_room = room - usize::from(header);
+    let shown = if threads.len() <= rows_room {
+        threads.len()
+    } else {
+        rows_room.saturating_sub(1)
+    };
+    let mut lines = Vec::new();
+    if header {
+        let mut l = Line::new(cw, colour);
+        l.push(
+            &format!("{:<8} {:<16} {:<3} {:>7}", "tid", "name", "st", "cpu"),
+            Role::Dim,
+        );
+        lines.push(l);
+    }
+    for row in threads.iter().take(shown) {
+        let t = &row.thread;
+        let name = t.name.as_deref().unwrap_or("—");
+        let state = t
+            .state
+            .map_or_else(|| "—".to_string(), |s| char::from(s).to_string());
+        let cpu = row.cpu_pct.map_or_else(|| "—".to_string(), proc_pct);
+        let mut l = Line::new(cw, colour);
+        l.plain(&format!(
+            "{:<8} {:<16} {:<3} {:>7}",
+            t.tid, name, state, cpu
+        ));
+        lines.push(l);
+    }
+    if shown < threads.len() {
+        let mut l = Line::new(cw, colour);
+        l.push(&format!("+{} more", threads.len() - shown), Role::Dim);
+        lines.push(l);
+    }
+    lines
 }
 
 /// The keys, one per line, in a box in place of the table.
@@ -2914,7 +2963,7 @@ mod tests {
         let mut tree = Tree::new();
         let rank = |p: &Proc| f64::from(p.cpu_pct.unwrap_or(-1.0));
         let mut out = Vec::new();
-        render(&mut out, r, v, &mut s, hist, &mut tree, &rank);
+        render(&mut out, r, v, &mut s, hist, &mut tree, &rank, &[]);
         String::from_utf8(out).unwrap()
     }
 
@@ -3382,7 +3431,7 @@ mod tests {
         let mut tree = Tree::new();
         let rank = |p: &Proc| f64::from(p.cpu_pct.unwrap_or(-1.0));
         let mut out = Vec::new();
-        render(&mut out, &r, &view(), &mut s, &hist, &mut tree, &rank);
+        render(&mut out, &r, &view(), &mut s, &hist, &mut tree, &rank, &[]);
         let lines = lines_of(&String::from_utf8(out).unwrap());
         let h = s.hits.clone();
         let cells_of = |y: usize, a: usize, b: usize| -> String {
@@ -3435,7 +3484,7 @@ mod tests {
         let mut tree = Tree::new();
         let rank = |p: &Proc| f64::from(p.cpu_pct.unwrap_or(-1.0));
         let mut out = Vec::new();
-        render(&mut out, &r, &view(), &mut s, &hist, &mut tree, &rank);
+        render(&mut out, &r, &view(), &mut s, &hist, &mut tree, &rank, &[]);
         let lines = lines_of(&String::from_utf8(out).unwrap());
         assert!(s.hits.scroll > 0);
         let first = format!("job{:02}", s.hits.scroll + 1);
