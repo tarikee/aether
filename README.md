@@ -238,7 +238,7 @@ Both have: a tree, a filter, sort keys, signals, disks, network, sensors and bat
 
 | System | Status |
 |---|---|
-| Linux | Built and run. AMD GPUs are read. NVIDIA GPUs: through NVML, written from its documented interface, not yet seen on a real card. Intel GPUs are not yet. |
+| Linux | Built and run. AMD GPUs are read. Intel GPUs: written from the kernel's documented files, not yet seen on a real card. NVIDIA GPUs: through NVML, written from its documented interface, not yet seen on a real card. |
 | Windows | Built; its tests run on GitHub's Windows machine. Everything is read except sensors, load average and GPU use per process. GPU and battery are not yet seen on a real machine, the view's keys and mouse are written from the console's API but not yet tried on a real console. |
 | macOS | Compiles (checked with `cargo check`, not run). Every source says "not built for this OS yet", and the view falls back to plain. |
 
