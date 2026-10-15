@@ -361,6 +361,38 @@ pub fn reading(line: &str) -> Result<Reading, String> {
     Ok(r)
 }
 
+/// The path of every value in one line of JSON, for the test that keeps `fields` in step: an
+/// object's value is `a.b`, a list's items are `a[]`; a list of objects gives the paths of
+/// their values (`a[].b`), and a list or object with nothing in it gives none.
+#[cfg(test)]
+pub(crate) fn key_paths(line: &str) -> Result<std::collections::BTreeSet<String>, String> {
+    fn walk(v: &V, path: &str, out: &mut std::collections::BTreeSet<String>) {
+        match v {
+            V::Obj(fields) => {
+                for (k, v) in fields {
+                    let next = if path.is_empty() {
+                        k.clone()
+                    } else {
+                        format!("{path}.{k}")
+                    };
+                    walk(v, &next, out);
+                }
+            }
+            V::Arr(items) => {
+                for v in items {
+                    walk(v, &format!("{path}[]"), out);
+                }
+            }
+            _ => {
+                out.insert(path.to_string());
+            }
+        }
+    }
+    let mut out = std::collections::BTreeSet::new();
+    walk(&parse(line)?, "", &mut out);
+    Ok(out)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
