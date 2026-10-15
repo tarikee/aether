@@ -172,6 +172,8 @@ Usage:
       printed; exit 1 if any holds, 0 if none.
   aether check
       what this machine and OS offer, and what is missing
+  aether fields [--json]
+      every value `aether --json` prints: its unit, when it is null, and the systems that give it
   aether version
       the version (also --version and -V)
   aether help
@@ -252,6 +254,12 @@ Every object carries `schema`; it goes up when a field is removed or changes mea
 
 Rates are bytes per second. CPU per process is a percent of the whole machine. Memory per process
 is resident minus shared.
+
+`aether fields` lists these values as a table: for each, its key, unit, what it means, when it is
+`null` and which systems (Linux, Windows, macOS) can give it. `aether fields --json` prints the same
+as `{"schema": 1, "parts": [...]}`, so a program can build its settings from the list and a value
+added to aether later appears there without a change to the program. A test keeps the list equal
+to what `aether --json` prints.
 
 ## How light
 

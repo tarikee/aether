@@ -1,5 +1,6 @@
 //! Output writers: text for people, JSON for programs. Each takes a whole reading.
 
+pub mod fields;
 pub mod history;
 pub mod json;
 pub mod jsonin;

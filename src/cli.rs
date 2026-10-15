@@ -256,6 +256,8 @@ Usage:
       (time in Unix seconds, state, value).
   aether check
       what this machine and OS offer, and what is missing
+  aether fields [--json]
+      every value `aether --json` prints: its unit, when it is null, and the systems that give it
   aether version
       the version (also --version and -V)
   aether help
@@ -450,6 +452,7 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
         ["help"] => p.command = "help",
         ["version"] => p.command = "version",
         ["check"] => p.command = "check",
+        ["fields"] => p.command = "fields",
         ["proc", t] => {
             p.command = "proc";
             p.target = Some((*t).to_string());

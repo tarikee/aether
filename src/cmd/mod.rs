@@ -2,6 +2,7 @@
 
 pub mod alert;
 pub mod check;
+pub mod fields;
 pub mod keys;
 pub mod kill;
 pub mod live;

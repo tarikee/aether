@@ -23,6 +23,7 @@ const COMMANDS: &[(&str, Run)] = &[
     ("alert", cmd::alert::run),
     ("port", cmd::port::run),
     ("check", cmd::check::run),
+    ("fields", cmd::fields::run),
     ("version", cli::version),
     ("help", cli::help),
 ];
