@@ -627,6 +627,7 @@ mod tests {
             flat: false,
             tree: false,
             all: false,
+            limit: None,
             only: None,
             disks: None,
             nets: None,
