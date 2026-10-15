@@ -72,6 +72,7 @@ pub fn run(parsed: &Parsed) -> ExitCode {
     let root = Root::system();
     let started = Instant::now();
     let mut sources = Sources::open(&root);
+    sources.procs.skip_gpu(parsed.view.skips_proc_gpu());
     let live = !parsed.once;
     let fits =
         screen_size().is_some_and(|(rows, cols)| rows >= SCREEN_MIN.0 && cols >= SCREEN_MIN.1);

@@ -42,6 +42,8 @@ pub struct Procs {
     /// The readings so far; an idle process is looked at on the ticks its pid picks.
     tick: u64,
     gpu: GpuProcs,
+    /// Whether the GPU use of each process is read (off for `procs.base`).
+    read_gpu: bool,
     pids: Vec<u32>,
     /// The one scratch buffer for every per-process read.
     buf: Vec<u8>,
@@ -107,6 +109,7 @@ impl Procs {
             clock: Instant::now(),
             tick: 0,
             gpu: GpuProcs::open(root),
+            read_gpu: true,
             pids: Vec::new(),
             buf: vec![0; SCRATCH],
         }
@@ -115,6 +118,11 @@ impl Procs {
     /// The processes of the last reading that have a PCI address, for the cards' sums.
     pub fn gpu_shares(&self) -> &[(String, f32, u64)] {
         self.gpu.shares()
+    }
+
+    /// Leaves the GPU use of each process out of the readings, and the GPU scan with it.
+    pub fn skip_gpu(&mut self, skip: bool) {
+        self.read_gpu = !skip;
     }
 
     pub fn read(&mut self) -> &[Proc] {
@@ -147,8 +155,10 @@ impl Procs {
         }
         self.pids.clear();
         self.pids.extend(self.list.iter().map(|p| p.pid));
-        let gpus = self.gpu.read(&self.pids);
-        merge_gpu(&mut self.list, gpus);
+        if self.read_gpu {
+            let gpus = self.gpu.read(&self.pids);
+            merge_gpu(&mut self.list, gpus);
+        }
         &self.list
     }
 

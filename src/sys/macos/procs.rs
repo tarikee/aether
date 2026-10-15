@@ -57,6 +57,9 @@ impl Procs {
         }
     }
 
+    /// No GPU use per process is read on this OS, so there is no GPU scan to skip.
+    pub fn skip_gpu(&mut self, _skip: bool) {}
+
     pub fn read(&mut self) -> &[Proc] {
         let now = Instant::now();
         let seconds = self

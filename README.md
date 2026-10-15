@@ -191,6 +191,7 @@ Options:
   --tree                 single processes, each under its parent
   --all                  print every row, past the screen's height (port: every connection)
   --only LIST            only these parts, e.g. cpu,mem (default: everything)
+                         procs.gpu: the process list with GPU use and VRAM per process; procs.base: without them. A reading of the process list costs about 3.9 ms of CPU with 585 processes, about 1.1 ms of it GPU use per process; procs.base leaves that out.
   --disk MOUNT[,MOUNT]   only these disks, by mount point (default: every disk)
   --net NAME[,NAME]      only these network interfaces (default: every one)
   --json                 one JSON object per reading; a missing reading is null

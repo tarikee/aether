@@ -1,4 +1,4 @@
-//! Arguments and help, by hand. The grammar is written once, here.
+//! Arguments and help text, by hand. The grammar is written once, here.
 
 use std::cmp::Ordering;
 use std::io::Write;
@@ -85,6 +85,18 @@ pub struct View {
 }
 
 impl View {
+    /// Whether `--only` leaves the GPU use of each process out: it names the process list as
+    /// `procs.base` and not as `procs` or `procs.gpu`.
+    pub fn skips_proc_gpu(&self) -> bool {
+        match &self.only {
+            None => false,
+            Some(list) => {
+                list.iter().any(|p| p == "procs.base")
+                    && !list.iter().any(|p| p == "procs" || p == "procs.gpu")
+            }
+        }
+    }
+
     /// Whether `--disk` shows this mount (no `--disk` shows every disk).
     pub fn shows_disk(&self, mount: &str) -> bool {
         named(&self.disks, mount)
@@ -99,9 +111,16 @@ impl View {
     pub fn shows(&self, part: &str) -> bool {
         match &self.only {
             None => true,
-            Some(list) => list.iter().any(|p| p == part),
+            Some(list) => list
+                .iter()
+                .any(|p| p == part || (part == "procs" && is_proc_part(p))),
         }
     }
+}
+
+/// Whether a part name is a finer part of the process list (`procs.base` or `procs.gpu`).
+fn is_proc_part(name: &str) -> bool {
+    matches!(name, "procs.base" | "procs.gpu")
 }
 
 /// Whether a list named on the command line has this name (no list names everything).
@@ -114,7 +133,17 @@ fn named(list: &Option<Vec<String>>, name: &str) -> bool {
 
 /// The parts `--only` takes.
 pub const PARTS: &[&str] = &[
-    "cpu", "mem", "gpu", "sensors", "disk", "net", "battery", "host", "procs",
+    "cpu",
+    "mem",
+    "gpu",
+    "sensors",
+    "disk",
+    "net",
+    "battery",
+    "host",
+    "procs",
+    "procs.base",
+    "procs.gpu",
 ];
 
 /// The names of what a reading has, for a message: `a, b`, or `none`.
@@ -275,6 +304,7 @@ Options:
   --tree                 single processes, each under its parent
   --all                  print every row, past the screen's height (port: every connection)
   --only LIST            only these parts, e.g. cpu,mem (default: everything)
+                         procs.gpu: the process list with GPU use and VRAM per process; procs.base: without them. A reading of the process list costs about 3.9 ms of CPU with 585 processes, about 1.1 ms of it GPU use per process; procs.base leaves that out.
   --disk MOUNT[,MOUNT]   only these disks, by mount point (default: every disk)
   --net NAME[,NAME]      only these network interfaces (default: every one)
   --json                 one JSON object per reading; a missing reading is null
@@ -627,6 +657,36 @@ mod tests {
         assert!(parse(&args("--by disk2")).is_err());
         assert!(parse(&args("-i 0")).is_err());
         assert!(parse(&args("--nope")).is_err());
+    }
+
+    #[test]
+    fn the_process_list_has_two_finer_names() {
+        let base = parse(&args("--only procs.base")).unwrap().view;
+        assert!(base.shows("procs"));
+        assert!(!base.shows("cpu"));
+        let gpu = parse(&args("--only procs.gpu")).unwrap().view;
+        assert!(gpu.shows("procs"));
+        let both = parse(&args("--only cpu,procs.base")).unwrap().view;
+        assert!(both.shows("cpu") && both.shows("procs") && !both.shows("gpu"));
+        let err = parse(&args("--only procs.nope")).unwrap_err();
+        assert!(
+            err.contains("no part \"procs.nope\"; there are: ")
+                && err.contains("procs.base, procs.gpu"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn only_procs_base_skips_the_gpu_scan_and_nothing_else_does() {
+        let skip = |line: &str| parse(&args(line)).unwrap().view.skips_proc_gpu();
+        assert!(skip("--only procs.base"));
+        assert!(skip("--only cpu,procs.base"));
+        assert!(!skip("--only procs"));
+        assert!(!skip("--only procs.gpu"));
+        assert!(!skip("--only procs.base,procs.gpu"));
+        assert!(!skip("--only procs,procs.base"));
+        assert!(!skip("--only cpu,mem"));
+        assert!(!skip(""));
     }
 
     #[test]

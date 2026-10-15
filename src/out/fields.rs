@@ -41,6 +41,19 @@ const NEVER: &str = "never";
 const NO_BATTERY: &str = "there is no battery (the whole battery is null)";
 const FIRST: &str = "the first reading, and when the counter cannot be read";
 
+/// The `--only` name that reads a value of a part: the part's own name, except that the process
+/// list has two finer names. `procs.gpu` reads `procs[].gpu_pct` and `procs[].vram` (the GPU use
+/// per process); `procs.base` reads the rest of the process list. `reading` is always read, so
+/// it has none.
+pub fn only_name(part: &'static str, key: &str) -> Option<&'static str> {
+    match part {
+        "reading" => None,
+        "procs" if key == "procs[].gpu_pct" || key == "procs[].vram" => Some("procs.gpu"),
+        "procs" => Some("procs.base"),
+        _ => Some(part),
+    }
+}
+
 /// The parts, in the order of the JSON: `reading` is what every object has, then the names
 /// `--only` takes (`cli::PARTS`), each with its values.
 pub const PARTS: &[(&str, &[Field])] = &[
@@ -491,7 +504,12 @@ pub fn write_json(out: &mut Vec<u8>) {
                 }
                 string(out, s);
             }
-            out.extend_from_slice(b"]}");
+            out.extend_from_slice(b"],\"only\":");
+            match only_name(name, field.key) {
+                Some(o) => string(out, o),
+                None => out.extend_from_slice(b"null"),
+            }
+            out.push(b'}');
         }
         out.extend_from_slice(b"]}");
     }
@@ -510,12 +528,13 @@ pub fn write_text(out: &mut Vec<u8>) {
         out.extend_from_slice(format!("{name}\n").as_bytes());
         for field in *fields {
             let line = format!(
-                "  {:<width$}  {:<7}  {}\n      null when: {}; systems: {}\n",
+                "  {:<width$}  {:<7}  {}\n      null when: {}; systems: {}; only: {}\n",
                 field.key,
                 field.unit.unwrap_or("text"),
                 field.about,
                 field.null_when,
                 field.systems.join(", "),
+                only_name(name, field.key).unwrap_or("none"),
             );
             out.extend_from_slice(line.as_bytes());
         }
@@ -662,8 +681,14 @@ mod tests {
 
     #[test]
     fn the_parts_are_the_ones_only_takes_and_every_entry_is_filled_in() {
+        // The table has the process list once; `--only` takes its two finer names too.
         let names: Vec<&str> = PARTS.iter().skip(1).map(|(n, _)| *n).collect();
-        assert_eq!(names, crate::cli::PARTS);
+        let whole: Vec<&str> = crate::cli::PARTS
+            .iter()
+            .copied()
+            .filter(|p| !p.starts_with("procs."))
+            .collect();
+        assert_eq!(names, whole);
         for (_, fields) in PARTS {
             for field in *fields {
                 assert!(!field.about.is_empty() && !field.null_when.is_empty());
@@ -681,5 +706,32 @@ mod tests {
         assert!(text.starts_with("{\"schema\":1,\"parts\":[{\"name\":\"reading\""));
         assert_eq!(text.matches('\n').count(), 1);
         assert!(text.contains("\"key\":\"gpus[].vram_used\",\"unit\":\"bytes\""));
+        assert!(text.contains("\"only\":\"procs.gpu\""));
+        assert!(text.contains("\"only\":\"procs.base\""));
+        assert!(text.contains("\"only\":null"));
+    }
+
+    #[test]
+    fn every_only_name_in_the_table_is_accepted_by_the_parser() {
+        for (part, fields) in PARTS {
+            for field in *fields {
+                match only_name(part, field.key) {
+                    Some(name) => {
+                        let line = vec!["--only".to_string(), name.to_string()];
+                        assert!(crate::cli::parse(&line).is_ok(), "{name} for {}", field.key);
+                    }
+                    None => assert_eq!(*part, "reading", "{}", field.key),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_process_gpu_values_are_procs_gpu_and_the_rest_procs_base() {
+        assert_eq!(only_name("procs", "procs[].gpu_pct"), Some("procs.gpu"));
+        assert_eq!(only_name("procs", "procs[].vram"), Some("procs.gpu"));
+        assert_eq!(only_name("procs", "procs[].rss"), Some("procs.base"));
+        assert_eq!(only_name("cpu", "cpu.pct"), Some("cpu"));
+        assert_eq!(only_name("reading", "t"), None);
     }
 }
