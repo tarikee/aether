@@ -80,6 +80,8 @@ pub struct View {
     pub disks: Option<Vec<String>>,
     /// The interfaces `--net` names; `None` shows every one.
     pub nets: Option<Vec<String>>,
+    /// The most processes the plain and `--once` views show (`--limit`); `None` shows all.
+    pub limit: Option<usize>,
 }
 
 impl View {
@@ -266,7 +268,8 @@ Options:
   --steady               with --by cpu, gpu or disk: order by a smoothed value, so rows
                          do not jump every tick (the numbers shown stay raw)
   --filter TEXT          only processes whose name or command line contains TEXT
-  --flat                 single processes, not grouped by app
+  --limit N, -n N        plain and --once: only the first N processes (the full screen ignores it)
+  --flat                single processes, not grouped by app
   --tree                 single processes, each under its parent
   --all                  print every row, past the screen's height (port: every connection)
   --only LIST            only these parts, e.g. cpu,mem (default: everything)
@@ -337,6 +340,7 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
             only: None,
             disks: None,
             nets: None,
+            limit: None,
         },
     };
     let mut words: Vec<&str> = Vec::new();
@@ -363,6 +367,15 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
                 p.view.filter = Some(text.to_string());
             }
             "--tree" => p.view.tree = true,
+            "--limit" | "-n" => {
+                let v = value(&mut it, a)?;
+                p.view.limit = Some(
+                    v.parse::<usize>()
+                        .ok()
+                        .filter(|n| *n >= 1)
+                        .ok_or_else(|| format!("{a} takes a whole number from 1 up, not {v}"))?,
+                );
+            }
             "--all" => p.view.all = true,
             "--force" => p.force = true,
             "--all-procs" => p.all_procs = true,
@@ -475,6 +488,9 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
     }
     if (p.to.is_some() || p.duration_s.is_some()) && p.command != "record" {
         return Err("--to and --for go with record".to_string());
+    }
+    if p.view.limit.is_some() && p.view.tree {
+        return Err("choose --tree or --limit".to_string());
     }
     if p.all_procs && p.command != "record" {
         return Err("--all-procs goes with record".to_string());
@@ -656,6 +672,23 @@ mod tests {
         assert_eq!(parse(&args("--by age")).unwrap().view.by, Sort::Age);
     }
 
+    #[test]
+    fn limit_is_read_with_long_or_short_flag_and_refused_when_bad_or_with_tree() {
+        assert_eq!(
+            parse(&args("--once --by mem -n 5")).unwrap().view.limit,
+            Some(5)
+        );
+        assert_eq!(parse(&args("--limit 5")).unwrap().view.limit, Some(5));
+        assert_eq!(parse(&args("--tree")).unwrap().view.limit, None);
+        assert!(parse(&args("--limit 0")).is_err());
+        assert!(parse(&args("-n abc")).is_err());
+        assert!(parse(&args("--limit")).is_err());
+        assert!(parse(&args("--limit 5 --tree")).is_err());
+        assert!(parse(&args("--tree -n 5")).is_err());
+        let e = parse(&args("--tree --limit 5")).unwrap_err();
+        assert_eq!(e, "choose --tree or --limit");
+    }
+
     fn keys(pid: u32, name: &str, rank: f64) -> Keys<'_> {
         Keys {
             pid,
@@ -679,6 +712,7 @@ mod tests {
             tree: false,
             disks: None,
             nets: None,
+            limit: None,
         }
     }
 

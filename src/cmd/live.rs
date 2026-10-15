@@ -450,6 +450,13 @@ pub(crate) fn order(procs: &mut [Proc], view: &View, rank: &dyn Fn(&Proc) -> f64
     procs.sort_unstable_by(|a, b| compare(view, &keys(a, rank), &keys(b, rank)));
 }
 
+/// Keeps the first `limit` processes of an ordered list (`--limit`); `None` keeps them all.
+pub(crate) fn cut(procs: &mut Vec<Proc>, limit: Option<usize>) {
+    if let Some(n) = limit {
+        procs.truncate(n);
+    }
+}
+
 fn keys<'a>(p: &'a Proc, rank: &dyn Fn(&Proc) -> f64) -> Keys<'a> {
     Keys {
         pid: p.pid,
@@ -763,6 +770,8 @@ fn draw(
                 &mut buf, &reading, &ui.view, &mut state, &hist, &mut tree, &rank, &threads,
             );
         } else {
+            // `--limit` cuts the ordered list here; the full screen above keeps every process.
+            cut(&mut reading.procs, ui.view.limit);
             if live && mode.tty && !parsed.json {
                 buf.extend_from_slice(CLEAR);
             }
@@ -865,6 +874,7 @@ mod tests {
             tree: false,
             disks: None,
             nets: None,
+            limit: None,
         };
         order(v, &view, &|p| key(p, by));
     }
@@ -962,6 +972,26 @@ mod tests {
         assert_eq!(pids(&v), vec![2, 1]);
         sorted(&mut v, Sort::Gpu);
         assert_eq!(pids(&v), vec![1, 2]);
+    }
+
+    #[test]
+    fn limit_cuts_the_order_by_mem_to_n() {
+        let make = || {
+            vec![
+                proc(1, None, 10, None, None),
+                proc(2, None, 50, None, None),
+                proc(3, None, 30, None, None),
+                proc(4, None, 40, None, None),
+            ]
+        };
+        let mut v = make();
+        sorted(&mut v, Sort::Mem);
+        cut(&mut v, Some(2));
+        assert_eq!(pids(&v), vec![2, 4]);
+        let mut all = make();
+        sorted(&mut all, Sort::Mem);
+        cut(&mut all, None);
+        assert_eq!(pids(&all), vec![2, 4, 3, 1]);
     }
 
     #[test]

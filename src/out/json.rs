@@ -588,6 +588,7 @@ mod tests {
         let view = View {
             disks: None,
             nets: None,
+            limit: None,
             by: Sort::Cpu,
             reverse: false,
             steady: false,
@@ -729,6 +730,7 @@ mod tests {
         let view = View {
             disks: None,
             nets: None,
+            limit: None,
             by: Sort::Cpu,
             reverse: false,
             steady: false,

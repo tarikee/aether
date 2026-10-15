@@ -563,6 +563,7 @@ mod tests {
         View {
             disks: None,
             nets: None,
+            limit: None,
             by,
             reverse: false,
             steady: false,

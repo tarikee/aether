@@ -180,6 +180,7 @@ Options:
   --steady               with --by cpu, gpu or disk: order by a smoothed value, so rows
                          do not jump every tick (the numbers shown stay raw)
   --filter TEXT          only processes whose name or command line contains TEXT
+  --limit N, -n N        plain and --once: only the first N processes (the full screen ignores it)
   --flat                 single processes, not grouped by app
   --tree                 single processes, each under its parent
   --all                  print every row, past the screen's height (port: every connection)
