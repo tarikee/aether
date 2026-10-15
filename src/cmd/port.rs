@@ -38,7 +38,7 @@ fn shown(s: &Socket) -> String {
 }
 
 /// The rows: one per socket, a v4 and a v6 listener of one process on one port as one row,
-/// sorted by port. The flag says some socket's process could not be seen.
+/// sorted by port, identical rows once. The flag says some socket's process could not be seen.
 pub fn rows(
     sockets: &[Socket],
     procs: &[Proc],
@@ -111,6 +111,20 @@ pub fn rows(
     out.sort_by(|a, b| {
         (a.port, a.proto, a.state, &a.local).cmp(&(b.port, b.proto, b.state, &b.local))
     });
+    // Several sockets of one process bound to one address look the same: show that row once.
+    let mut i = 0;
+    while i < out.len() {
+        if out[..i]
+            .iter()
+            .rev()
+            .take_while(|p| p.port == out[i].port)
+            .any(|p| *p == out[i])
+        {
+            out.remove(i);
+        } else {
+            i += 1;
+        }
+    }
     (out, hidden)
 }
 
@@ -235,6 +249,19 @@ mod tests {
         assert_eq!((r[0].port, r[0].ip), (22, "v4"));
         assert_eq!((r[1].port, r[1].ip), (22, "v6"));
         assert_eq!((r[2].port, r[2].ip, r[2].local.as_str()), (90, "both", "*"));
+    }
+
+    #[test]
+    fn identical_rows_are_shown_once() {
+        let udp = |pid| Socket {
+            proto: "udp",
+            state: "UNCONN",
+            ..sock(false, 1900, Some(pid))
+        };
+        let list = vec![udp(7), udp(7), udp(8), sock(false, 80, Some(7)), udp(7)];
+        let (r, _) = rows(&list, &[], &HashMap::new());
+        let ports: Vec<(u16, Option<u32>)> = r.iter().map(|r| (r.port, r.pid)).collect();
+        assert_eq!(ports, [(80, Some(7)), (1900, Some(7)), (1900, Some(8))]);
     }
 
     #[test]

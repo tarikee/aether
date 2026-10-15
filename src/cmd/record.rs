@@ -55,9 +55,11 @@ pub fn run(parsed: &Parsed) -> ExitCode {
         peaks.add(&r);
         if let Some(f) = &mut file {
             kept.clone_from(&r);
-            cut(&mut kept.procs);
+            if !parsed.all_procs {
+                cut(&mut kept.procs);
+            }
             line.clear();
-            json::write(&kept, &parsed.view, &mut line);
+            json::write_record(&kept, &parsed.view, &mut line, parsed.all_procs);
             if f.write_all(&line).and_then(|()| f.flush()).is_err() {
                 eprintln!("aether: could not write the file");
                 failed = true;
@@ -175,6 +177,30 @@ mod tests {
         assert!(summarise(path).unwrap_err().contains("line 2"));
         std::fs::write(&f, "{\"t\":1}\nnot json\n{\"t\":3}\n").unwrap();
         assert!(summarise(path).unwrap_err().contains("line 2"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn old_lines_with_every_process_and_new_slim_lines_both_count() {
+        let old = "{\"t\":1.0,\"cpu\":{\"pct\":5.123456,\"temp_c\":null},\"procs\":[{\"pid\":4,\"ppid\":1,\"uid\":0,\
+                   \"threads\":2,\"name\":\"web\",\"state\":\"S\",\"cpu_pct\":12.5,\"gpu_pct\":null,\
+                   \"mem\":900,\"rss\":800,\"started_s\":0,\"vram\":null,\"read_bps\":null,\
+                   \"write_bps\":null}]}";
+        let new =
+            "{\"t\":2,\"cpu\":{\"pct\":7.5,\"temp_c\":null},\"procs\":[{\"pid\":5,\"name\":\"db\",\
+                   \"cpu_pct\":30.25,\"mem\":1000}]}";
+        let dir = std::env::temp_dir().join(format!("aether-peaks-old-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("rec.jsonl");
+        std::fs::write(&f, format!("{old}\n{new}\n")).unwrap();
+        let p = summarise(f.to_str().unwrap()).unwrap();
+        assert_eq!(p.readings, 2);
+        assert_eq!(p.top_cpu.len(), 2);
+        assert!(p.top_cpu.iter().any(|e| e.name == "web" && e.value == 12.5));
+        assert!(p
+            .top_mem
+            .iter()
+            .any(|e| e.name == "db" && e.value == 1000.0));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

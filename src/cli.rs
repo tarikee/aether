@@ -181,6 +181,8 @@ pub struct Parsed {
     pub no_defaults: bool,
     /// `record --to FILE`: where the readings are written.
     pub to: Option<String>,
+    /// `record --all-procs`: every process on each recorded line, whole.
+    pub all_procs: bool,
     /// `record --for DURATION`, in seconds.
     pub duration_s: Option<f64>,
     /// `alert --run CMD`: the command run on each firing.
@@ -232,12 +234,12 @@ Usage:
       asks the process to stop and waits 3 s; says if it is still there.
       --force kills it. By NAME it lists the matches and asks first; -y skips the question.
       -s sends that one signal and does not wait. :PORT is the process listening on it.
-  aether record [--to FILE] [--for DURATION] [-i SECS] [--only LIST]
+  aether record [--to FILE] [--all-procs] [--for DURATION] [-i SECS] [--only LIST]
       reads without drawing until Ctrl-C or DURATION (90s, 30m, 8h), then prints the peaks:
       the highest value of each reading, when, and the average; the five processes with the
       most CPU and the five with the most memory. --json prints that as one object.
-      --to FILE also writes one JSON line per reading, the processes cut to the 20 highest
-      by CPU and the 20 by memory.
+      --to FILE also writes one JSON line per reading, with the 10 processes using the most
+      CPU and the 10 using the most memory (pid, name, CPU, memory); --all-procs keeps all.
   aether peaks FILE
       the same summary from a file `record --to` wrote (or from any `aether --json` output)
   aether alert RULE... [--run CMD] [-i SECS] [--once]
@@ -273,6 +275,7 @@ Options:
   --no-keys              the full screen takes no keys and no mouse
   --no-mouse             the full screen takes keys but not the mouse
   --to FILE              record: also write every reading to FILE, one JSON line each
+  --all-procs            record: write every process, whole, on each line of --to FILE
   --for DURATION         record: stop after this long (90s, 30m, 8h; at most 720h)
   --run CMD              alert: the command run when a rule fires
   -s, --signal NAME|NUMBER  kill: the signal to send (TERM, SIGSTOP, 19; 1 to 64)
@@ -315,6 +318,7 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
         yes: false,
         signal: None,
         no_defaults: false,
+        all_procs: false,
         to: None,
         duration_s: None,
         run: None,
@@ -358,6 +362,7 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
             "--tree" => p.view.tree = true,
             "--all" => p.view.all = true,
             "--force" => p.force = true,
+            "--all-procs" => p.all_procs = true,
             "-y" | "--yes" => p.yes = true,
             "--no-defaults" => p.no_defaults = true,
             "--to" => p.to = Some(value(&mut it, a)?.to_string()),
@@ -468,6 +473,9 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
     if (p.to.is_some() || p.duration_s.is_some()) && p.command != "record" {
         return Err("--to and --for go with record".to_string());
     }
+    if p.all_procs && p.command != "record" {
+        return Err("--all-procs goes with record".to_string());
+    }
     if p.run.is_some() && p.command != "alert" {
         return Err("--run goes with alert".to_string());
     }
@@ -573,6 +581,9 @@ mod tests {
             parse(&args("record --for 8h")).unwrap().duration_s,
             Some(28800.0)
         );
+        assert!(parse(&args("record --all-procs")).unwrap().all_procs);
+        assert!(!parse(&args("record")).unwrap().all_procs);
+        assert!(parse(&args("--all-procs")).is_err());
         assert!(parse(&args("record --for 90")).is_err());
         assert!(parse(&args("record --for 0s")).is_err());
         let p = parse(&args("peaks f.jsonl --json")).unwrap();
