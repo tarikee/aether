@@ -3,7 +3,7 @@
 
 use crate::cli::Parsed;
 use crate::cmd::live::finish;
-use crate::cmd::proc::named;
+use crate::cmd::proc::{named, not_found};
 use aether::sys::{end, send_signal, EndError, Procs, Root};
 use std::io::{self, IsTerminal, Write};
 use std::process::ExitCode;
@@ -118,10 +118,11 @@ pub fn run(parsed: &Parsed) -> ExitCode {
         }
         Err(_) => {
             let mut procs = Procs::open(&root);
-            let mut found = named(procs.read(), target);
+            let list = procs.read();
+            let mut found = named(list, target);
             found.retain(|(pid, _)| !refused(*pid, me));
             if found.is_empty() {
-                eprintln!("aether: no process named {target}");
+                eprintln!("aether: {}", not_found(list, target));
                 return ExitCode::FAILURE;
             }
             if !confirm(&found, parsed.yes) {

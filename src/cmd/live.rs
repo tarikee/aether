@@ -11,8 +11,8 @@ use crate::out::screen::{self, Overlay, Screen};
 use crate::out::tree::Tree;
 use crate::out::{json, text};
 use aether::sys::{
-    command_line, thread_list, thread_rows, Battery, Cpu, Disks, Gpus, Host, Mem, Nets, Proc,
-    Procs, Root, Sensors, Thread, ThreadRow,
+    command_line, logical_cpus, thread_list, thread_rows, Battery, Cpu, Disks, Gpus, Host, Mem,
+    Nets, Proc, Procs, Root, Sensors, Thread, ThreadRow,
 };
 use aether::Reading;
 use std::collections::HashMap;
@@ -575,10 +575,12 @@ fn end_rows(reading: &Reading, grouped: bool, pid: Option<u32>, name: &str, forc
 
 /// The threads of the open detail's process, with each CPU % since its last look (the look of
 /// the same process only). Read only while the detail is open; `last` is cleared when it closes.
+/// `cpus` is the machine's CPU count, that the % is a share of.
 fn detail_threads(
     root: &Root,
     pid: Option<u32>,
     last: &mut Option<(u32, Vec<Thread>, Instant)>,
+    cpus: f64,
 ) -> Vec<ThreadRow> {
     let now = pid.and_then(|pid| thread_list(root, pid).map(|list| (pid, list)));
     let Some((pid, now)) = now else {
@@ -587,9 +589,9 @@ fn detail_threads(
     };
     let rows = match last.take() {
         Some((prev, before, at)) if prev == pid => {
-            thread_rows(&before, &now, at.elapsed().as_secs_f64())
+            thread_rows(&before, &now, at.elapsed().as_secs_f64(), cpus)
         }
-        _ => thread_rows(&[], &now, 0.0),
+        _ => thread_rows(&[], &now, 0.0, cpus),
     };
     *last = Some((pid, now, Instant::now()));
     rows
@@ -751,7 +753,8 @@ fn draw(
             state.prompt = prompt(&ui);
             let threads = if state.overlay == Overlay::Detail {
                 let pid = listed.get(ui.index).and_then(|r| r.pid);
-                detail_threads(&root, pid, &mut thread_look)
+                let cpus = logical_cpus(reading.cpu.threads.len());
+                detail_threads(&root, pid, &mut thread_look, cpus)
             } else {
                 thread_look = None;
                 Vec::new()

@@ -231,9 +231,19 @@ pub struct ThreadRow {
     pub cpu_pct: Option<f32>,
 }
 
+/// The number of CPUs a thread % is a share of: `count` (the threads of a CPU reading) when
+/// there is one, else the system's count.
+pub fn logical_cpus(count: usize) -> f64 {
+    if count > 0 {
+        return count as f64;
+    }
+    std::thread::available_parallelism().map_or(1.0, |n| n.get() as f64)
+}
+
 /// Pairs each thread of `now` with its CPU % over the `secs` since the look `prev`, most CPU
-/// first (no % last), then by TID. A thread not in `prev` has no %.
-pub fn thread_rows(prev: &[Thread], now: &[Thread], secs: f64) -> Vec<ThreadRow> {
+/// first (no % last), then by TID. A thread not in `prev` has no %. The % is a share of the
+/// whole machine (`cpus` CPUs, at least 1), like the process list's.
+pub fn thread_rows(prev: &[Thread], now: &[Thread], secs: f64, cpus: f64) -> Vec<ThreadRow> {
     let before: std::collections::HashMap<u32, f64> = prev
         .iter()
         .filter_map(|t| Some((t.tid, t.cpu_s?)))
@@ -243,7 +253,7 @@ pub fn thread_rows(prev: &[Thread], now: &[Thread], secs: f64) -> Vec<ThreadRow>
         .map(|t| {
             let cpu_pct = match (before.get(&t.tid), t.cpu_s) {
                 (Some(&a), Some(b)) if secs > 0.0 && b >= a => {
-                    Some(((b - a) / secs * 100.0) as f32)
+                    Some(((b - a) / secs / cpus.max(1.0) * 100.0) as f32)
                 }
                 _ => None,
             };
@@ -288,7 +298,7 @@ mod thread_tests {
             t(3, Some(9.0)),
             t(4, Some(2.0)),
         ];
-        let rows = thread_rows(&before, &now, 2.0);
+        let rows = thread_rows(&before, &now, 2.0, 1.0);
         let pct = |tid: u32| rows.iter().find(|r| r.thread.tid == tid).unwrap().cpu_pct;
         assert_eq!(pct(1), Some(25.0));
         assert_eq!(pct(2), Some(0.0));
@@ -299,16 +309,26 @@ mod thread_tests {
     #[test]
     fn the_first_look_has_no_percent_and_the_busiest_thread_comes_first() {
         let now = [t(5, Some(0.5)), t(6, Some(3.0)), t(2, None)];
-        let rows = thread_rows(&[], &now, 1.0);
+        let rows = thread_rows(&[], &now, 1.0, 1.0);
         assert!(rows.iter().all(|r| r.cpu_pct.is_none()));
         let order: Vec<u32> = rows.iter().map(|r| r.thread.tid).collect();
         assert_eq!(order, vec![2, 5, 6]);
         let before = [t(5, Some(0.0)), t(6, Some(1.0))];
         let now = [t(5, Some(2.0)), t(6, Some(1.5)), t(2, None)];
-        let order: Vec<u32> = thread_rows(&before, &now, 1.0)
+        let order: Vec<u32> = thread_rows(&before, &now, 1.0, 1.0)
             .iter()
             .map(|r| r.thread.tid)
             .collect();
         assert_eq!(order, vec![5, 6, 2]);
+    }
+
+    #[test]
+    fn thread_percent_is_a_share_of_the_whole_machine() {
+        // Two threads each use 1 s of CPU in 1 s on a 4-CPU machine: 25 % of the machine each.
+        let before = [t(1, Some(0.0)), t(2, Some(0.0))];
+        let now = [t(1, Some(1.0)), t(2, Some(1.0))];
+        let rows = thread_rows(&before, &now, 1.0, 4.0);
+        assert!(rows.iter().all(|r| r.cpu_pct == Some(25.0)));
+        assert_eq!(logical_cpus(4), 4.0);
     }
 }
