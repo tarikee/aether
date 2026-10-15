@@ -2,8 +2,11 @@
 
 use crate::cli::Parsed;
 use crate::cmd::live::finish;
+use crate::out::json::{self, ProcJson};
+use crate::out::mask::mask_secrets;
 use aether::sys::{
-    detail, logical_cpus, thread_list, thread_rows, Cpu, Proc, ProcDetail, Procs, Root, ThreadRow,
+    detail, logical_cpus, thread_list, thread_rows, Cpu, Proc, ProcDetail, Procs, Root, Thread,
+    ThreadRow,
 };
 use std::io::{self, Write};
 use std::process::ExitCode;
@@ -17,6 +20,9 @@ pub fn run(parsed: &Parsed) -> ExitCode {
         return ExitCode::from(2);
     };
     let root = Root::system();
+    if parsed.json {
+        return run_json(&root, target);
+    }
     let (pid, name) = match resolve(&root, target) {
         Ok(found) => found,
         Err(message) => {
@@ -38,6 +44,82 @@ pub fn run(parsed: &Parsed) -> ExitCode {
         .map(|now| thread_rows(&first, &now, began.elapsed().as_secs_f64(), cpus));
     let mut out = io::stdout().lock();
     finish(write_detail(&mut out, pid, &name, &d, threads.as_deref()))
+}
+
+/// `proc --json`: every process the target names, one object each (an array when there are
+/// several). The CPU % of a process and of its threads are over the same second as the thread
+/// list, a share of the whole machine, as the reading's process list has them.
+fn run_json(root: &Root, target: &str) -> ExitCode {
+    let found = match matches(root, target) {
+        Ok(found) => found,
+        Err(message) => {
+            eprintln!("aether: {message}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut procs = Procs::open(root);
+    procs.read();
+    let mut cpu = Cpu::open(root);
+    let cpus = logical_cpus(cpu.read().threads.len());
+    let firsts: Vec<Vec<Thread>> = found
+        .iter()
+        .map(|(pid, _)| thread_list(root, *pid).unwrap_or_default())
+        .collect();
+    let began = Instant::now();
+    sleep(Duration::from_secs(1));
+    let secs = began.elapsed().as_secs_f64();
+    let list = procs.read();
+    let mut rows = Vec::new();
+    for ((pid, name), first) in found.iter().zip(firsts.iter()) {
+        let Some(detail) = detail(root, *pid) else {
+            eprintln!("aether: no process {pid}");
+            return ExitCode::FAILURE;
+        };
+        let live = list.iter().find(|p| p.pid == *pid);
+        let shown = live
+            .map(|p| p.name.clone())
+            .or_else(|| (!name.is_empty()).then(|| name.clone()));
+        let threads = thread_list(root, *pid).map(|now| thread_rows(first, &now, secs, cpus));
+        rows.push(ProcJson {
+            pid: *pid,
+            name: shown,
+            cpu_pct: live.and_then(|p| p.cpu_pct),
+            detail,
+            threads,
+        });
+    }
+    let mut buf = Vec::new();
+    json::write_procs(&rows, found.len() != 1, &mut buf);
+    let mut out = io::stdout().lock();
+    finish(out.write_all(&buf))
+}
+
+/// Every process a target names, as (pid, name): a PID, every listener of a :PORT, or the
+/// processes with that name (or, when none has it, the ones whose name starts with it).
+fn matches(root: &Root, target: &str) -> Result<Vec<(u32, String)>, String> {
+    if let Ok(pid) = target.parse::<u32>() {
+        return Ok(vec![(pid, String::new())]);
+    }
+    if target.starts_with(':') {
+        let Some(port) = crate::cmd::port::parse_port(target) else {
+            return Err(format!("{target} is not a port"));
+        };
+        let found = crate::cmd::port::listeners(root, port)?;
+        if found.is_empty() {
+            return Err(format!("no process listens on port {port}"));
+        }
+        return Ok(found);
+    }
+    let mut procs = Procs::open(root);
+    let list = procs.read();
+    let mut found = named(list, target);
+    if found.is_empty() {
+        found = starting(list, target);
+    }
+    if found.is_empty() {
+        return Err(not_found(list, target));
+    }
+    Ok(found)
 }
 
 /// The process a target names: a PID as it is, or the one process with that name.
@@ -160,7 +242,8 @@ fn write_detail(
     if !name.is_empty() {
         writeln!(out, "name       {name}")?;
     }
-    writeln!(out, "command    {}", d.cmdline.as_deref().unwrap_or("-"))?;
+    let command = d.cmdline.as_deref().map(mask_secrets);
+    writeln!(out, "command    {}", command.as_deref().unwrap_or("-"))?;
     writeln!(out, "program    {}", d.exe.as_deref().unwrap_or("-"))?;
     writeln!(out, "folder     {}", d.cwd.as_deref().unwrap_or("-"))?;
     let parents = if d.parents.is_empty() {
@@ -362,5 +445,24 @@ mod tests {
         assert!(text.contains("parents    bash (1200) <- systemd (1)\n"));
         assert!(text.contains("cpu time   0.50 s\n"));
         assert!(text.ends_with("open files 4\n"));
+    }
+
+    #[test]
+    fn a_secret_in_the_command_line_is_masked_in_the_text() {
+        let d = ProcDetail {
+            cmdline: Some("tool --token abc --port 80".to_string()),
+            exe: None,
+            cwd: None,
+            parents: vec![],
+            cpu_s: 0.0,
+            open_files: None,
+        };
+        let mut out: Vec<u8> = Vec::new();
+        write_detail(&mut out, 42, "tool", &d, None).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(
+            text.contains("command    tool --token *** --port 80\n"),
+            "{text}"
+        );
     }
 }

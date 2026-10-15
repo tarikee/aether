@@ -3,6 +3,7 @@
 
 use crate::cli::{duration, Parsed, View};
 use crate::cmd::live::{catch_stops, stop_requested, wait, Sources};
+use crate::out::json;
 use crate::out::peaks::hottest;
 use crate::out::screen::net_pct;
 use aether::sys::Root;
@@ -213,6 +214,13 @@ fn clock() -> String {
     format!("{h:02}:{m:02}:{s:02}")
 }
 
+/// Seconds since the Unix epoch (0 when the clock is before it).
+fn unix_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
 /// Runs the command through the shell, not waiting for it.
 fn spawn(cmd: &str, rule: &Rule, value: Option<f64>) -> Option<Child> {
     #[cfg(windows)]
@@ -283,7 +291,14 @@ pub fn run(parsed: &Parsed) -> ExitCode {
         for rule in &rules {
             if let Some(v) = rule.value(&r, &view).filter(|v| rule.holds(*v)) {
                 any = true;
-                if writeln!(out, "{}  holds  ({})", rule.text, rule.show(v)).is_err() {
+                let wrote = if parsed.json {
+                    let mut buf = Vec::new();
+                    json::write_alert(unix_secs(), &rule.text, "holds", Some(v), &mut buf);
+                    out.write_all(&buf)
+                } else {
+                    writeln!(out, "{}  holds  ({})", rule.text, rule.show(v))
+                };
+                if wrote.is_err() {
                     break;
                 }
             }
@@ -311,10 +326,14 @@ pub fn run(parsed: &Parsed) -> ExitCode {
             };
             let shown = value.map_or("no reading".to_string(), |v| rule.show(v));
             let mut out = io::stdout().lock();
-            if writeln!(out, "{}  {}  {word}  ({shown})", clock(), rule.text)
-                .and_then(|()| out.flush())
-                .is_err()
-            {
+            let wrote = if parsed.json {
+                let mut buf = Vec::new();
+                json::write_alert(unix_secs(), &rule.text, word, value, &mut buf);
+                out.write_all(&buf)
+            } else {
+                writeln!(out, "{}  {}  {word}  ({shown})", clock(), rule.text)
+            };
+            if wrote.and_then(|()| out.flush()).is_err() {
                 return ExitCode::SUCCESS;
             }
             if event == Event::Fired {

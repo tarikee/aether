@@ -3,6 +3,7 @@
 pub mod history;
 pub mod json;
 pub mod jsonin;
+pub mod mask;
 pub mod peaks;
 pub mod ports;
 pub mod screen;

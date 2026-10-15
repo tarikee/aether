@@ -4,6 +4,7 @@
 use crate::cli::Parsed;
 use crate::cmd::live::finish;
 use crate::cmd::proc::{named, not_found};
+use crate::out::json;
 use aether::sys::{end, send_signal, EndError, Procs, Root};
 use std::io::{self, IsTerminal, Write};
 use std::process::ExitCode;
@@ -67,8 +68,20 @@ fn shown(sig: i32) -> String {
     }
 }
 
+/// The name of a signal number for the answer: `STOP` for SIGSTOP, else the number.
+fn signal_name(sig: i32) -> String {
+    match NAMES.iter().find(|(_, n)| *n == sig) {
+        Some((name, _)) => (*name).to_string(),
+        None => sig.to_string(),
+    }
+}
+
 /// Ends one process or the processes with a name, or sends them the `-s` signal.
 pub fn run(parsed: &Parsed) -> ExitCode {
+    if parsed.json && !parsed.yes {
+        eprintln!("aether: --json needs -y (it never asks)");
+        return ExitCode::from(2);
+    }
     let Some(target) = parsed.target.as_deref() else {
         eprintln!("aether: kill needs one PID or NAME");
         return ExitCode::from(2);
@@ -133,6 +146,7 @@ pub fn run(parsed: &Parsed) -> ExitCode {
     };
     let mut out = io::stdout().lock();
     let mut all_ended = true;
+    let mut rows: Vec<(u32, String, Option<String>)> = Vec::new();
     for (pid, name) in &picks {
         let label = if name.is_empty() {
             format!("pid {pid}")
@@ -145,13 +159,28 @@ pub fn run(parsed: &Parsed) -> ExitCode {
         };
         match outcome {
             Ok(line) => {
-                let _ = writeln!(out, "{line}");
+                if !parsed.json {
+                    let _ = writeln!(out, "{line}");
+                }
+                rows.push((*pid, name.clone(), None));
             }
             Err(e) => {
                 all_ended = false;
-                eprintln!("aether: {label}: {}", reason(e, *pid));
+                let why = reason(e, *pid);
+                eprintln!("aether: {label}: {why}");
+                rows.push((*pid, name.clone(), Some(why)));
             }
         }
+    }
+    if parsed.json {
+        let word = match signal {
+            Some(sig) => signal_name(sig),
+            None if parsed.force => "KILL".to_string(),
+            None => "TERM".to_string(),
+        };
+        let mut buf = Vec::new();
+        json::write_kill(target, &word, &rows, &mut buf);
+        let _ = out.write_all(&buf);
     }
     if all_ended {
         finish(Ok(()))

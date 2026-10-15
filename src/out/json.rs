@@ -1,12 +1,17 @@
 //! One JSON object per reading, every process included. A missing value is `null`.
 
 use crate::cli::View;
+use crate::out::mask::mask_secrets;
 use aether::sys::{
     BatterySample, CpuSample, DiskSample, GpuSample, HostSample, MemSample, NetSample, Proc,
-    Sensor, SensorKind,
+    ProcDetail, Sensor, SensorKind, ThreadRow,
 };
 use aether::Reading;
 use std::io::Write;
+
+/// The version of the JSON shape; every object starts with it as `"schema"`. It goes up when a
+/// field is removed or changes meaning, never for an added field.
+pub const SCHEMA: u32 = 1;
 
 /// Appends one reading as one JSON object and a newline to `out`. `t` is always there; each
 /// other part is there when `--only` names it (the same names as the text form).
@@ -77,6 +82,7 @@ fn shorten(line: &[u8], out: &mut Vec<u8>) {
 /// `write`, with `slim` processes when asked.
 fn write_with(reading: &Reading, view: &View, out: &mut Vec<u8>, slim: bool) {
     let mut o = Obj::open(out);
+    o.int("schema", Some(u64::from(SCHEMA)));
     o.key("t");
     float64(o.out, reading.t);
     if view.shows("cpu") {
@@ -137,6 +143,7 @@ fn write_with(reading: &Reading, view: &View, out: &mut Vec<u8>, slim: bool) {
 /// The rows of `aether port` as one object; `hidden` says some process could not be seen.
 pub fn write_ports(rows: &[crate::out::ports::PortRow], hidden: bool, out: &mut Vec<u8>) {
     let mut o = Obj::open(out);
+    o.int("schema", Some(u64::from(SCHEMA)));
     o.key("sockets");
     array(o.out, rows, |out, r| {
         let mut o = Obj::open(out);
@@ -163,6 +170,137 @@ pub fn write_ports(rows: &[crate::out::ports::PortRow], hidden: bool, out: &mut 
     });
     o.key("hidden");
     put(o.out, if hidden { "true" } else { "false" });
+    o.close();
+    put(out, "\n");
+}
+
+/// One process for `proc --json`: what `proc` shows, read by the caller.
+pub struct ProcJson {
+    pub pid: u32,
+    /// The name the process has; `None` when it is not known.
+    pub name: Option<String>,
+    /// The CPU % of the whole machine, as the reading's process list has it.
+    pub cpu_pct: Option<f32>,
+    pub detail: ProcDetail,
+    /// The threads with their CPU %; `None` when the thread list could not be read.
+    pub threads: Option<Vec<ThreadRow>>,
+}
+
+/// `proc --json`: one object for one process, or a JSON array of them when `array` is set.
+pub fn write_procs(procs: &[ProcJson], array: bool, out: &mut Vec<u8>) {
+    if array {
+        out.push(b'[');
+    }
+    for (i, p) in procs.iter().enumerate() {
+        if i > 0 {
+            out.push(b',');
+        }
+        proc_detail(p, out);
+    }
+    if array {
+        out.push(b']');
+    }
+    put(out, "\n");
+}
+
+fn proc_detail(p: &ProcJson, out: &mut Vec<u8>) {
+    let d = &p.detail;
+    let mut o = Obj::open(out);
+    o.int("schema", Some(u64::from(SCHEMA)));
+    o.int("pid", Some(u64::from(p.pid)));
+    opt_text(&mut o, "name", p.name.as_deref());
+    o.f32("cpu_pct", p.cpu_pct);
+    let cmdline = d.cmdline.as_deref().map(mask_secrets);
+    opt_text(&mut o, "cmdline", cmdline.as_deref());
+    opt_text(&mut o, "exe", d.exe.as_deref());
+    opt_text(&mut o, "cwd", d.cwd.as_deref());
+    o.key("parents");
+    array_of(o.out, d.parents.iter(), parent_each);
+    o.key("cpu_s");
+    float64(o.out, d.cpu_s);
+    o.int(
+        "threads",
+        p.threads.as_ref().and_then(|r| u64::try_from(r.len()).ok()),
+    );
+    o.key("thread_list");
+    match &p.threads {
+        Some(rows) => array(o.out, rows.as_slice(), thread_each),
+        None => put(o.out, "null"),
+    }
+    o.int("open_files", d.open_files.map(u64::from));
+    o.close();
+}
+
+fn parent_each(out: &mut Vec<u8>, p: &(u32, String)) {
+    let mut o = Obj::open(out);
+    o.int("pid", Some(u64::from(p.0)));
+    o.text("name", &p.1);
+    o.close();
+}
+
+fn thread_each(out: &mut Vec<u8>, r: &ThreadRow) {
+    let mut o = Obj::open(out);
+    o.int("tid", Some(u64::from(r.thread.tid)));
+    opt_text(&mut o, "name", r.thread.name.as_deref());
+    o.key("state");
+    match r.thread.state {
+        Some(s) => string(o.out, &char::from(s).to_string()),
+        None => put(o.out, "null"),
+    }
+    o.f32("cpu", r.cpu_pct);
+    o.close();
+}
+
+/// A key with a text value, or `null`.
+fn opt_text(o: &mut Obj<'_>, k: &str, v: Option<&str>) {
+    o.key(k);
+    match v {
+        Some(t) => string(o.out, t),
+        None => put(o.out, "null"),
+    }
+}
+
+/// `kill --json`: the target as given, the signal's name, and one result per process: its pid,
+/// its name (`null` if not known), `ok`, and the reason it was not ended (`error`, else `null`).
+pub fn write_kill(
+    target: &str,
+    signal: &str,
+    rows: &[(u32, String, Option<String>)],
+    out: &mut Vec<u8>,
+) {
+    let mut o = Obj::open(out);
+    o.int("schema", Some(u64::from(SCHEMA)));
+    o.text("target", target);
+    o.text("signal", signal);
+    o.key("results");
+    array(o.out, rows, kill_result);
+    o.close();
+    put(out, "\n");
+}
+
+fn kill_result(out: &mut Vec<u8>, r: &(u32, String, Option<String>)) {
+    let mut o = Obj::open(out);
+    o.int("pid", Some(u64::from(r.0)));
+    opt_text(&mut o, "name", (!r.1.is_empty()).then_some(r.1.as_str()));
+    o.key("ok");
+    put(o.out, if r.2.is_none() { "true" } else { "false" });
+    opt_text(&mut o, "error", r.2.as_deref());
+    o.close();
+}
+
+/// `alert --json`: one line as one object. `state` is `fired`, `cleared` or `holds` (for
+/// `--once`); `value` is the number the rule looked at, or `null`.
+pub fn write_alert(time: u64, rule: &str, state: &str, value: Option<f64>, out: &mut Vec<u8>) {
+    let mut o = Obj::open(out);
+    o.int("schema", Some(u64::from(SCHEMA)));
+    o.int("time", Some(time));
+    o.text("rule", rule);
+    o.text("state", state);
+    o.key("value");
+    match value {
+        Some(v) => float64(o.out, v),
+        None => put(o.out, "null"),
+    }
     o.close();
     put(out, "\n");
 }
@@ -467,7 +605,7 @@ mod tests {
     #[test]
     fn only_leaves_out_the_parts_it_does_not_name() {
         let text = render_with(&Reading::default(), Some(&["cpu", "mem"]));
-        assert!(text.starts_with("{\"t\":"));
+        assert!(text.starts_with("{\"schema\":1,\"t\":"));
         assert!(text.contains("\"cpu\":{"));
         assert!(text.contains("\"mem\":{"));
         assert!(!text.contains("\"gpus\""));
@@ -479,7 +617,7 @@ mod tests {
     fn an_empty_reading_is_nulls_and_zeros() {
         assert_eq!(
             render(&Reading::default()),
-            "{\"t\":0,\"cpu\":{\"pct\":null,\"threads\":[],\"threads_mhz\":[],\"mhz\":null,\"temp_c\":null,\"power_w\":null,\"load\":null},\
+            "{\"schema\":1,\"t\":0,\"cpu\":{\"pct\":null,\"threads\":[],\"threads_mhz\":[],\"mhz\":null,\"temp_c\":null,\"power_w\":null,\"load\":null},\
              \"mem\":{\"total\":0,\"used\":0,\"available\":0,\"cached\":0,\"swap_total\":0,\
              \"swap_used\":0,\"pressure\":null},\"gpus\":[],\"sensors\":[],\"disks\":[],\
              \"nets\":[],\"battery\":null,\"host\":{\"uptime_s\":0,\"threads\":0},\"procs\":[]}\n"
@@ -532,7 +670,7 @@ mod tests {
         };
         let text = render(&r);
         assert!(
-            text.starts_with("{\"t\":1.5,\"cpu\":{\"pct\":12.5,"),
+            text.starts_with("{\"schema\":1,\"t\":1.5,\"cpu\":{\"pct\":12.5,"),
             "{text}"
         );
         assert!(text.contains("\"load\":[1,0.5,0.25]"), "{text}");

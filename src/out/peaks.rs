@@ -287,7 +287,8 @@ impl Peaks {
         };
         o.extend_from_slice(
             format!(
-                "{{\"readings\":{},\"seconds\":{}",
+                "{{\"schema\":{},\"readings\":{},\"seconds\":{}",
+                crate::out::json::SCHEMA,
                 self.readings,
                 num(self.span())
             )

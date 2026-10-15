@@ -228,12 +228,14 @@ Usage:
       the listening sockets: protocol, address, port, pid, process, user, sorted by port.
       PORT shows who holds that port, listening or connected; --all adds connections.
       A process that cannot be seen shows a dash (root shows it).
-  aether proc PID|NAME|:PORT
-      one process in full: command line, program, folder, parents, CPU time, open files
-  aether kill PID|NAME|:PORT [--force] [-y] [-s NAME|NUMBER]
+  aether proc PID|NAME|:PORT [--json]
+      one process in full: command line (secrets masked), program, folder, parents, CPU time,
+      threads, open files. --json prints it as one object (an array when a name matches several).
+  aether kill PID|NAME|:PORT [--force] [-y] [-s NAME|NUMBER] [--json]
       asks the process to stop and waits 3 s; says if it is still there.
       --force kills it. By NAME it lists the matches and asks first; -y skips the question.
       -s sends that one signal and does not wait. :PORT is the process listening on it.
+      --json needs -y; it never asks and prints one object with a result per process.
   aether record [--to FILE] [--all-procs] [--for DURATION] [-i SECS] [--only LIST]
       reads without drawing until Ctrl-C or DURATION (90s, 30m, 8h), then prints the peaks:
       the highest value of each reading, when, and the average; the five processes with the
@@ -242,13 +244,14 @@ Usage:
       CPU and the 10 using the most memory (pid, name, CPU, memory); --all-procs keeps all.
   aether peaks FILE
       the same summary from a file `record --to` wrote (or from any `aether --json` output)
-  aether alert RULE... [--run CMD] [-i SECS] [--once]
+  aether alert RULE... [--run CMD] [-i SECS] [--once] [--json]
       prints a line when a rule starts and stops holding. RULE is KEY>VALUE or KEY<VALUE, with
       an optional hold time: cpu>90/30s. KEY: cpu, mem, swap, gpu, vram, temp (hottest, C),
       disk:MOUNT (used %), net (the first line's NET %), battery.
       --run CMD runs CMD (sh -c; cmd /C on Windows) at each firing, with AETHER_RULE,
       AETHER_VALUE and AETHER_STATE set. --once: two readings, the rules that hold are
-      printed; exit 1 if any holds, 0 if none.
+      printed; exit 1 if any holds, 0 if none. --json prints each line as one object
+      (time in Unix seconds, state, value).
   aether check
       what this machine and OS offer, and what is missing
   aether version
@@ -676,6 +679,37 @@ mod tests {
             tree: false,
             disks: None,
             nets: None,
+        }
+    }
+
+    #[test]
+    fn json_is_read_for_proc_kill_and_alert() {
+        assert!(parse(&args("proc 1 --json")).unwrap().json);
+        let k = parse(&args("kill 1 --json -y")).unwrap();
+        assert!(k.json && k.yes);
+        assert!(parse(&args("alert cpu>90 --json")).unwrap().json);
+    }
+
+    #[test]
+    fn unknown_options_fail_for_every_command() {
+        for line in [
+            "proc 1 --bogus",
+            "kill 1 --bogus",
+            "alert cpu>1 --bogus",
+            "port --bogus",
+            "record --bogus",
+            "peaks f.jsonl --bogus",
+            "check --bogus",
+            "version --bogus",
+            "help --bogus",
+            "--bogus",
+            "--bogus proc 1",
+        ] {
+            assert_eq!(
+                parse(&args(line)).unwrap_err(),
+                "unknown option --bogus",
+                "{line}"
+            );
         }
     }
 
