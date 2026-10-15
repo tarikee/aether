@@ -113,7 +113,8 @@ sensors, then the thread bars, so the process table keeps 8 rows (5 under 30 row
 | `Home End` | the first or the last one |
 | `← →` | the sort key |
 | `r` | reverse the order |
-| `t` | tree (f: flat; grouped is the default) |
+| `t` | tree: each process under the one that started it |
+| `f` | flat: every process on its own row; press again for grouped by app, the default |
 | `/` | filter by name or command line; Enter keeps it, Esc clears it |
 | `space` | pause the list |
 | `Enter` | the selected process in full |

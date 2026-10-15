@@ -157,12 +157,16 @@ const PROC_COLS: [(&str, usize); 9] = [
     ("USER", 8),
 ];
 /// The keys, for the help box: the keys, then what they do.
-const HELP: [(&str, &str); 13] = [
+const HELP: [(&str, &str); 14] = [
     ("↑ ↓  PgUp PgDn", "select a process"),
     ("Home End", "the first or the last one"),
     ("← →", "the sort key"),
     ("r", "reverse the order"),
-    ("t", "tree (f: flat; grouped is the default)"),
+    ("t", "tree: each process under the one that started it"),
+    (
+        "f",
+        "flat: every process on its own row (again: grouped by app)",
+    ),
     (
         "/",
         "filter by name or command line; Enter keeps it, Esc clears it",
