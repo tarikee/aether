@@ -146,6 +146,10 @@ Usage:
   aether proc PID|NAME|:PORT [--json]
       one process in full: command line (secrets masked), program, folder, parents, CPU time,
       threads, open files. --json prints it as one object (an array when a name matches several).
+      NAME is a process named so (ASCII case ignored, a 15-character cut name too), else a name
+      that starts with it, else a program whose file name (after `/` or `\`, in its command line)
+      equals or starts with it, so `rocketleague` finds `Z:\games\RocketLeague.exe`. Several
+      matches are listed with their commands, up to 10. kill matches only the name, exactly.
   aether kill PID|NAME|:PORT [--force] [-y] [-s NAME|NUMBER] [--json]
       asks the process to stop and waits 3 s; says if it is still there.
       --force kills it. By NAME it lists the matches and asks first; -y skips the question.

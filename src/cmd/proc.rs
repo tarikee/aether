@@ -5,8 +5,8 @@ use crate::cmd::live::finish;
 use crate::out::json::{self, ProcJson};
 use crate::out::mask::mask_secrets;
 use aether::sys::{
-    detail, logical_cpus, thread_list, thread_rows, Cpu, Proc, ProcDetail, Procs, Root, Thread,
-    ThreadRow,
+    command_line, detail, logical_cpus, thread_list, thread_rows, Cpu, Proc, ProcDetail, Procs,
+    Root, Thread, ThreadRow,
 };
 use std::io::{self, Write};
 use std::process::ExitCode;
@@ -112,10 +112,7 @@ fn matches(root: &Root, target: &str) -> Result<Vec<(u32, String)>, String> {
     }
     let mut procs = Procs::open(root);
     let list = procs.read();
-    let mut found = named(list, target);
-    if found.is_empty() {
-        found = starting(list, target);
-    }
+    let found = by_name(list, target, |pid| command_line(root, pid));
     if found.is_empty() {
         return Err(not_found(list, target));
     }
@@ -146,24 +143,107 @@ pub(crate) fn resolve(root: &Root, target: &str) -> Result<(u32, String), String
     }
     let mut procs = Procs::open(root);
     let list = procs.read();
-    let mut found = named(list, target);
-    if found.is_empty() {
-        // Reading only: a name that starts with the target is shown, never ended.
-        found = starting(list, target);
-    }
+    let found = by_name(list, target, |pid| command_line(root, pid));
     match found.as_slice() {
         [] => Err(not_found(list, target)),
         [one] => Ok(one.clone()),
-        many => {
-            let pids: Vec<String> = many.iter().take(8).map(|(p, _)| p.to_string()).collect();
-            Err(format!(
-                "{} processes named {target} ({}{}): give one PID",
-                many.len(),
-                pids.join(", "),
-                if many.len() > 8 { ", ..." } else { "" }
-            ))
-        }
+        many => Err(several(target, many, |pid| command_line(root, pid))),
     }
+}
+
+/// Most rows an error lists when several processes match.
+const LIST_MAX: usize = 10;
+/// Most characters of a command line a row shows; a longer one ends with `...`.
+const COMMAND_MAX: usize = 60;
+
+/// The processes a name finds for `proc`: those named it, else those whose name starts with it,
+/// else those whose program's file name does (see `by_program`). Reading only: a process is
+/// shown, never ended.
+fn by_name(
+    procs: &[Proc],
+    name: &str,
+    command: impl Fn(u32) -> Option<String>,
+) -> Vec<(u32, String)> {
+    let found = named(procs, name);
+    if !found.is_empty() {
+        return found;
+    }
+    let found = starting(procs, name);
+    if !found.is_empty() {
+        return found;
+    }
+    by_program(procs, name, command)
+}
+
+/// The processes whose program's file name equals or starts with `name` (ASCII case ignored),
+/// by pid. `command` reads a process's command line; it is read once per process, here only.
+fn by_program(
+    procs: &[Proc],
+    name: &str,
+    command: impl Fn(u32) -> Option<String>,
+) -> Vec<(u32, String)> {
+    collect(procs, |p| {
+        command(p.pid)
+            .as_deref()
+            .and_then(program_name)
+            .is_some_and(|program| starts_ignoring_case(program, name))
+    })
+}
+
+/// The program's file name of a command line: the last part, split on `/` or `\`, of its first
+/// word. A first word in quotes runs to the closing quote, so a path with spaces stays whole.
+/// The arguments of a command line are joined by spaces, so an unquoted Windows path
+/// (`C:\Program Files\...`) runs to its first `.exe`.
+fn program_name(cmdline: &str) -> Option<&str> {
+    let first = match cmdline.strip_prefix('"') {
+        Some(rest) => rest.split('"').next()?,
+        None if cmdline.as_bytes().get(1..3) == Some(b":\\") => {
+            match cmdline.to_ascii_lowercase().find(".exe") {
+                Some(at) => cmdline.get(..at + 4)?,
+                None => cmdline.split(' ').next()?,
+            }
+        }
+        None => cmdline.split(' ').next()?,
+    };
+    first.rsplit(['/', '\\']).next().filter(|s| !s.is_empty())
+}
+
+/// Whether `text` starts with `head` (ASCII case ignored). An empty `head` never does.
+fn starts_ignoring_case(text: &str, head: &str) -> bool {
+    !head.is_empty()
+        && text
+            .get(..head.len())
+            .is_some_and(|start| start.eq_ignore_ascii_case(head))
+}
+
+/// The error when several processes match: the count, one row per process (up to `LIST_MAX`),
+/// then how to choose one.
+fn several(
+    target: &str,
+    found: &[(u32, String)],
+    command: impl Fn(u32) -> Option<String>,
+) -> String {
+    let mut lines = vec![format!("{} processes match {target}:", found.len())];
+    for (pid, name) in found.iter().take(LIST_MAX) {
+        let shown = shown_command(command(*pid));
+        lines.push(format!("  {pid:<7}  {name:<16}  {shown}"));
+    }
+    lines.push("give one PID".to_string());
+    lines.join("\n")
+}
+
+/// A command line as a row shows it: secrets masked, cut to `COMMAND_MAX` characters, and "-"
+/// when it cannot be read or is empty.
+fn shown_command(command: Option<String>) -> String {
+    let Some(command) = command.filter(|c| !c.is_empty()) else {
+        return "-".to_string();
+    };
+    let masked = mask_secrets(&command);
+    if masked.chars().count() <= COMMAND_MAX {
+        return masked;
+    }
+    let head: String = masked.chars().take(COMMAND_MAX - 3).collect();
+    format!("{head}...")
 }
 
 /// Linux cuts a process name at this many bytes.
@@ -190,12 +270,7 @@ fn is_cut_of(proc_name: &str, name: &str) -> bool {
 /// The processes whose name starts with `name` (ASCII case ignored), by pid. Only `proc` uses
 /// this (it reads and never ends); an empty `name` matches nothing.
 pub(crate) fn starting(procs: &[Proc], name: &str) -> Vec<(u32, String)> {
-    collect(procs, |p| {
-        !name.is_empty()
-            && p.name
-                .get(..name.len())
-                .is_some_and(|head| head.eq_ignore_ascii_case(name))
-    })
+    collect(procs, |p| starts_ignoring_case(&p.name, name))
 }
 
 /// Up to three processes whose name contains `name` (ASCII case ignored), by pid. Only for
@@ -267,8 +342,8 @@ fn write_detail(
             writeln!(out, "threads    {}", rows.len())?;
             writeln!(
                 out,
-                "  {:<8} {:<16} {:<3} {:>7}",
-                "tid", "name", "st", "cpu"
+                "  {:<8} {:<16} {:<3} {:>14}",
+                "tid", "name", "st", "CPU% (machine)"
             )?;
             for row in rows {
                 let t = &row.thread;
@@ -278,7 +353,7 @@ fn write_detail(
                 let cpu = row.cpu_pct.map_or("-".to_string(), |p| format!("{p:.1} %"));
                 writeln!(
                     out,
-                    "  {:<8} {:<16} {:<3} {:>7}",
+                    "  {:<8} {:<16} {:<3} {:>14}",
                     t.tid,
                     t.name.as_deref().unwrap_or("-"),
                     state,
@@ -464,5 +539,114 @@ mod tests {
             text.contains("command    tool --token *** --port 80\n"),
             "{text}"
         );
+    }
+
+    /// Command lines by pid, for the tests: a pid not in the table has none.
+    fn commands<'a>(table: &'a [(u32, &'a str)]) -> impl Fn(u32) -> Option<String> + 'a {
+        move |pid| {
+            table
+                .iter()
+                .find(|(p, _)| *p == pid)
+                .map(|(_, c)| c.to_string())
+        }
+    }
+
+    #[test]
+    fn a_linux_program_path_finds_the_process_by_its_file_name() {
+        let list = vec![proc(12, "gamex"), proc(11, "bash")];
+        let table = [(12, "/opt/game/bin/launcher --fast"), (11, "bash")];
+        assert_eq!(
+            by_name(&list, "launcher", commands(&table)),
+            vec![(12, "gamex".to_string())]
+        );
+        assert_eq!(by_name(&list, "Launcher", commands(&table)).len(), 1);
+        assert_eq!(by_name(&list, "launch", commands(&table)).len(), 1);
+        assert!(by_name(&list, "game-bin", commands(&table)).is_empty());
+    }
+
+    #[test]
+    fn a_windows_program_path_with_backslashes_finds_it_ignoring_case() {
+        // Under Wine the command line holds a Windows path.
+        let list = vec![proc(4242, "wineserver"), proc(5, "sleep")];
+        let table = [
+            (4242, r"Z:\games\RocketLeague.exe -fullscreen"),
+            (5, "/usr/bin/sleep 300"),
+        ];
+        let found = vec![(4242, "wineserver".to_string())];
+        assert_eq!(by_name(&list, "RocketLeague.exe", commands(&table)), found);
+        assert_eq!(by_name(&list, "rocketleague", commands(&table)), found);
+        assert_eq!(by_name(&list, "rocketleague.EXE", commands(&table)), found);
+        assert!(by_name(&list, "league", commands(&table)).is_empty());
+        assert_eq!(
+            program_name(r"Z:\games\RocketLeague.exe -fullscreen"),
+            Some("RocketLeague.exe")
+        );
+        assert_eq!(
+            program_name(r#""C:\Games\Rocket League\RocketLeague.exe" -x"#),
+            Some("RocketLeague.exe")
+        );
+        assert_eq!(
+            program_name(
+                r"C:\Program Files\Epic Games\rocketleague\Binaries\Win64\RocketLeague.exe -AUTH_LOGIN=unused"
+            ),
+            Some("RocketLeague.exe")
+        );
+        assert_eq!(program_name("/usr/bin/sleep 300"), Some("sleep"));
+        assert_eq!(
+            program_name("/usr/bin/python3 /tmp/a.exe.py"),
+            Some("python3")
+        );
+        assert_eq!(program_name(""), None);
+    }
+
+    #[test]
+    fn a_program_name_that_starts_with_the_target_is_found() {
+        let list = vec![proc(4242, "wineserver")];
+        let table = [(4242, r"Z:\games\RocketLeague.exe")];
+        assert_eq!(by_name(&list, "Rocket", commands(&table)).len(), 1);
+        assert!(by_name(&list, "", commands(&table)).is_empty());
+    }
+
+    #[test]
+    fn kill_never_matches_by_program_file_name_or_prefix() {
+        let list = vec![proc(4242, "wineserver")];
+        let table = [(4242, r"Z:\games\RocketLeague.exe")];
+        assert!(named(&list, "RocketLeague.exe").is_empty());
+        assert!(named(&list, "rocketleague").is_empty());
+        assert!(starting(&list, "rocketleague").is_empty());
+        // proc finds it through the command line, kill's matching does not read one.
+        assert_eq!(by_name(&list, "rocketleague", commands(&table)).len(), 1);
+    }
+
+    #[test]
+    fn several_matches_are_listed_up_to_ten_with_long_and_secret_commands_cut() {
+        let list: Vec<Proc> = (1..=12).map(|pid| proc(pid, "sleep")).collect();
+        let long = format!("sleep {}", "x".repeat(80));
+        let command = |pid: u32| {
+            Some(match pid {
+                3 => long.clone(),
+                4 => "tool --token abc --port 80".to_string(),
+                _ => "sleep 300".to_string(),
+            })
+        };
+        let found = by_name(&list, "sleep", command);
+        assert_eq!(found.len(), 12);
+        let text = several("sleep", &found, command);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 12, "{text}");
+        assert_eq!(lines[0], "12 processes match sleep:");
+        assert_eq!(lines[11], "give one PID");
+        assert!(lines[1].starts_with("  1 "), "{text}");
+        let cut = lines[3].rsplit("  ").next().unwrap_or_default();
+        assert_eq!(cut.chars().count(), COMMAND_MAX);
+        assert!(cut.ends_with("..."), "{cut}");
+        assert!(lines[4].ends_with("tool --token *** --port 80"), "{text}");
+    }
+
+    #[test]
+    fn a_row_shows_a_dash_for_a_missing_or_empty_command() {
+        assert_eq!(shown_command(None), "-");
+        assert_eq!(shown_command(Some(String::new())), "-");
+        assert_eq!(shown_command(Some("sleep 1".to_string())), "sleep 1");
     }
 }
