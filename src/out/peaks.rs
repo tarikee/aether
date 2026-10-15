@@ -3,14 +3,21 @@
 
 use crate::out::json;
 use crate::out::text::{bytes, rate};
+use crate::out::width::{cells, cut as cut_end, cut_middle};
 use aether::sys::{Proc, SensorKind};
 use aether::Reading;
 
 /// How many processes the summary lists, per kind.
 const TOP: usize = 5;
 
+/// The widest line of the text summary, in cells.
+const WIDTH: usize = 100;
+
+/// The longest GPU or interface name in the text summary.
+const NAME: usize = 32;
+
 /// How many processes a recorded line keeps, per kind.
-const KEPT: usize = 20;
+const KEPT: usize = 10;
 
 /// The highest value of one series, when it came (seconds since the start) and the average.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -181,29 +188,52 @@ impl Peaks {
         row("memory used".to_string(), &self.mem, &byt);
         row("swap used".to_string(), &self.swap, &byt);
         for g in &self.gpus {
-            row(format!("GPU {} use", g.name), &g.s[0], &pct);
-            row(format!("GPU {} VRAM", g.name), &g.s[1], &byt);
-            row(format!("GPU {} temperature", g.name), &g.s[2], &|v| {
-                format!("{v:.1} C")
-            });
+            row(format!("GPU {} use", gpu_name(&g.name)), &g.s[0], &pct);
+            row(format!("GPU {} VRAM", gpu_name(&g.name)), &g.s[1], &byt);
+            row(
+                format!("GPU {} temperature", gpu_name(&g.name)),
+                &g.s[2],
+                &|v| format!("{v:.1} °C"),
+            );
         }
         row("hottest temperature".to_string(), &self.hottest, &|v| {
-            format!("{v:.1} C")
+            format!("{v:.1} °C")
         });
         for d in &self.disks {
-            row(format!("disk {} read", d.name), &d.s[0], &rt);
-            row(format!("disk {} write", d.name), &d.s[1], &rt);
+            row(
+                format!("disk {} read", cut_middle(&d.name, NAME)),
+                &d.s[0],
+                &rt,
+            );
+            row(
+                format!("disk {} write", cut_middle(&d.name, NAME)),
+                &d.s[1],
+                &rt,
+            );
         }
         for n in &self.nets {
-            row(format!("net {} receive", n.name), &n.s[0], &rt);
-            row(format!("net {} send", n.name), &n.s[1], &rt);
+            row(
+                format!("net {} receive", cut_middle(&n.name, NAME)),
+                &n.s[0],
+                &rt,
+            );
+            row(
+                format!("net {} send", cut_middle(&n.name, NAME)),
+                &n.s[1],
+                &rt,
+            );
         }
         let mut out = format!("{} readings over {}\n", self.readings, clock(self.span()));
         let head = ["", "highest", "at", "average"].map(str::to_string);
         rows.insert(0, head);
-        let w: Vec<usize> = (0..4)
-            .map(|c| rows.iter().map(|r| r[c].chars().count()).max().unwrap_or(0))
+        let mut w: Vec<usize> = (0..4)
+            .map(|c| rows.iter().map(|r| cells(&r[c])).max().unwrap_or(0))
             .collect();
+        // A label that still does not leave room for the numbers is cut in the middle.
+        w[0] = w[0].min(WIDTH.saturating_sub(w[1] + w[2] + w[3] + 6));
+        for r in &mut rows {
+            r[0] = cut_middle(&r[0], w[0]);
+        }
         for r in &rows {
             out.push_str(&format!(
                 "{:<w0$}  {:>w1$}  {:>w2$}  {:>w3$}\n",
@@ -228,13 +258,10 @@ impl Peaks {
             let mut l: Vec<&Top> = list.iter().collect();
             l.sort_by(|a, b| b.value.total_cmp(&a.value));
             for e in l {
-                out.push_str(&format!(
-                    "  {:>10}  at {}  {} (pid {})\n",
-                    f(e.value),
-                    clock(e.at - first),
-                    e.name,
-                    e.pid
-                ));
+                let head = format!("  {:>10}  at {}  ", f(e.value), clock(e.at - first));
+                let tail = format!(" (pid {})", e.pid);
+                let room = WIDTH.saturating_sub(cells(&head) + cells(&tail));
+                out.push_str(&format!("{head}{}{tail}\n", cut_middle(&e.name, room)));
             }
         }
         out
@@ -320,6 +347,18 @@ impl Peaks {
     }
 }
 
+/// A GPU's name for the text summary: past `NAME` cells, a trailing ` [...]` goes first, then
+/// the end is cut.
+fn gpu_name(name: &str) -> String {
+    let mut n = name;
+    if cells(n) > NAME {
+        if let (Some(at), true) = (n.rfind(" ["), n.ends_with(']')) {
+            n = n[..at].trim_end();
+        }
+    }
+    cut_end(n, NAME)
+}
+
 /// A JSON number; the values here are always finite.
 fn num(v: f64) -> String {
     if v.is_finite() {
@@ -352,8 +391,8 @@ pub fn hottest(r: &Reading) -> Option<f64> {
         .max_by(f64::total_cmp)
 }
 
-/// Cuts the process list to the 20 with the highest CPU and the 20 with the most memory,
-/// in their order; a recorded reading would be about 80 kB with every process.
+/// Cuts the process list to the 10 with the highest CPU (those using any) and the 10 with the
+/// most memory, in their order; a recorded reading would be about 80 kB with every process.
 pub fn cut(procs: &mut Vec<Proc>) {
     if procs.len() <= KEPT {
         return;
@@ -365,7 +404,7 @@ pub fn cut(procs: &mut Vec<Proc>) {
         c(b).total_cmp(&c(a))
     });
     for &i in idx.iter().take(KEPT) {
-        keep[i] = true;
+        keep[i] = procs[i].cpu_pct.is_some_and(|c| c > 0.0);
     }
     idx.sort_by(|&a, &b| procs[b].mem.cmp(&procs[a].mem));
     for &i in idx.iter().take(KEPT) {
@@ -500,15 +539,61 @@ mod tests {
     }
 
     #[test]
-    fn the_cut_keeps_the_highest_twenty_of_each() {
+    fn long_names_are_cut_and_every_line_fits() {
+        let mut p = Peaks::default();
+        for t in 0..3u32 {
+            let mut r = at(f64::from(t), Some(5.0), 1);
+            r.gpus.push(aether::sys::GpuSample {
+                name: "Ellesmere [Radeon RX 470/480/570/570X/580/580X/590]".into(),
+                temp_c: Some(55.0),
+                pct: Some(3.0),
+                vram_used: Some(1 << 30),
+                vendor: "amd",
+                power_w: None,
+                vram_total: None,
+                fan_rpm: None,
+            });
+            r.disks.push(DiskSample {
+                mount: "/run/media/tarike/0b3a1f2c-5d4e-4f60-8a9b-c1d2e3f4a5b6".into(),
+                dev: "sda1".into(),
+                total: 1,
+                used: 1,
+                read_bps: Some(1 << 20),
+                write_bps: Some(5),
+                busy_pct: None,
+            });
+            r.procs.push(proc(9, 50.0, 7));
+            r.procs[0].name = "n".repeat(120);
+            p.add(&r);
+        }
+        let text = p.text();
+        for l in text.lines() {
+            assert!(l.chars().count() <= 100, "{l}");
+        }
+        assert!(text.contains("GPU Ellesmere use"), "{text}");
+        assert!(text.contains("55.0 °C"), "{text}");
+        assert!(text.contains("disk /run/media…"), "{text}");
+        assert!(!text.contains(" C\n"), "{text}");
+        assert_eq!(gpu_name("Short [x]"), "Short [x]");
+        assert_eq!(cells(&gpu_name(&"g".repeat(50))), 32);
+    }
+
+    #[test]
+    fn the_cut_keeps_the_highest_ten_of_each() {
         let mut procs: Vec<Proc> = (0..100u32)
             .map(|i| proc(i, if i < 30 { i as f32 } else { 0.0 }, u64::from(100 - i)))
             .collect();
         cut(&mut procs);
         let pids: Vec<u32> = procs.iter().map(|p| p.pid).collect();
-        // CPU: 10..30; memory: 0..20; both lists in their first order.
-        let want: Vec<u32> = (0..30).collect();
+        // CPU: 20..30; memory: 0..10; both lists in their first order.
+        let want: Vec<u32> = (0..10).chain(20..30).collect();
         assert_eq!(pids, want);
+        // Idle processes are not kept for their CPU.
+        let mut idle: Vec<Proc> = (0..40u32).map(|i| proc(i, 0.0, 1)).collect();
+        idle[39].cpu_pct = Some(3.0);
+        cut(&mut idle);
+        assert!(idle.iter().any(|p| p.pid == 39));
+        assert!(idle.len() <= 11);
         let mut few: Vec<Proc> = (0..5).map(|i| proc(i, 0.0, 1)).collect();
         cut(&mut few);
         assert_eq!(few.len(), 5);

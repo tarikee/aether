@@ -8,3 +8,4 @@ pub mod ports;
 pub mod screen;
 pub mod text;
 pub mod tree;
+pub mod width;

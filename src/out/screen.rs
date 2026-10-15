@@ -10,6 +10,7 @@
 use super::history::{History, Ring};
 use super::text::{self, Row};
 use super::tree::Tree;
+use super::width::{cells, cut, cut_middle, fit};
 use crate::cli::{Sort, View};
 use aether::sys::{BatterySample, DiskSample, GpuSample, Proc, Sensor, SensorKind, ThreadRow};
 use aether::Reading;
@@ -306,75 +307,6 @@ impl Line {
 /// A line with no cap, for the parts of a border or a fact.
 fn loose(colour: bool) -> Line {
     Line::new(usize::MAX, colour)
-}
-
-/// The cells a character takes: two for the wide East Asian ranges and emoji, none for the
-/// combining marks, one for the rest.
-fn char_cells(c: char) -> usize {
-    let u = u32::from(c);
-    if matches!(u, 0x0300..=0x036F | 0x200B..=0x200F | 0x20D0..=0x20FF | 0xFE00..=0xFE0F | 0xFE20..=0xFE2F)
-    {
-        return 0;
-    }
-    if matches!(u, 0x1100..=0x115F | 0x2E80..=0x303E | 0x3041..=0x33FF | 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xA000..=0xA4CF | 0xAC00..=0xD7A3 | 0xF900..=0xFAFF | 0xFE30..=0xFE4F | 0xFF00..=0xFF60 | 0xFFE0..=0xFFE6 | 0x1F300..=0x1F64F | 0x1F900..=0x1F9FF | 0x20000..=0x3FFFD)
-    {
-        return 2;
-    }
-    1
-}
-
-/// The cells a text takes on the screen.
-fn cells(s: &str) -> usize {
-    s.chars().map(char_cells).sum()
-}
-
-/// The longest start of `s` within `room` cells, and its cells.
-fn fit(s: &str, room: usize) -> (&str, usize) {
-    let mut used = 0;
-    for (i, c) in s.char_indices() {
-        let w = char_cells(c);
-        if used + w > room {
-            return (&s[..i], used);
-        }
-        used += w;
-    }
-    (s, used)
-}
-
-/// Cuts `s` to `n` cells, the last one an ellipsis when it is cut.
-fn cut(s: &str, n: usize) -> String {
-    if cells(s) <= n {
-        return s.to_string();
-    }
-    if n == 0 {
-        return String::new();
-    }
-    let mut t = fit(s, n - 1).0.to_string();
-    t.push('…');
-    t
-}
-
-/// Cuts a name to `n` cells around an ellipsis: a head of about a third, the rest the tail.
-fn cut_middle(s: &str, n: usize) -> String {
-    if cells(s) <= n {
-        return s.to_string();
-    }
-    if n < 3 {
-        return cut(s, n);
-    }
-    let head_w = n / 3;
-    let tail_w = n - 1 - head_w;
-    let head = fit(s, head_w).0;
-    let mut start = s.len();
-    let mut used = 0;
-    for (i, c) in s.char_indices().rev() {
-        if used + char_cells(c) > tail_w {
-            break;
-        }
-        used += char_cells(c);
-        start = i;
-    }
-    format!("{head}…{}", &s[start..])
 }
 
 /// Draws one frame into `out`: the synchronised-output marks, the cursor home, each line ended
@@ -2758,14 +2690,9 @@ fn sig3(v: f64) -> String {
 
 /// A byte count as its number and its unit: `9.8` and `GiB`.
 fn size_parts(n: u64) -> (String, &'static str) {
-    if n < 1024 {
+    let (v, i) = text::scale(n, 999.5);
+    if i == 0 {
         return (n.to_string(), UNITS[0]);
-    }
-    let mut v = n as f64;
-    let mut i = 0;
-    while v >= 1024.0 && i < UNITS.len() - 1 {
-        v /= 1024.0;
-        i += 1;
     }
     (sig3(v), UNITS[i])
 }
@@ -2835,14 +2762,9 @@ fn user_name(uid: u32, users: &HashMap<u32, String>) -> String {
 
 /// A size or rate as text, for a table cell: `2.3 GiB`, `0 B`, `3.2 MiB/s`.
 fn size_text(n: u64, suffix: &str) -> String {
-    if n < 1024 {
+    let (v, i) = text::scale(n, 999.5);
+    if i == 0 {
         return format!("{n} B{suffix}");
-    }
-    let mut v = n as f64;
-    let mut i = 0;
-    while v >= 1024.0 && i < UNITS.len() - 1 {
-        v /= 1024.0;
-        i += 1;
     }
     // One decimal under 10 (3.0 GiB beside 3.4 GiB), whole from 10 (12 GiB, 400 MiB).
     let num = if v < 9.95 {
@@ -3495,6 +3417,10 @@ mod tests {
     fn a_long_name_and_a_long_mount_are_cut() {
         assert_eq!(cut_middle("/run/media/someone/Data", 13), "/run…one/Data");
         assert_eq!(cut_middle("/data", 13), "/data");
+        assert_eq!(size_text(1000 * 1024, ""), "1.0 MiB");
+        assert_eq!(size_text(999 * 1024, "/s"), "999 KiB/s");
+        assert_eq!(size_parts(1023 * 1024 + 1000), ("1".to_string(), "MiB"));
+        assert_eq!(size_parts(1000 * 1024 * 1024), ("1".to_string(), "GiB"));
         assert_eq!(cells(&cut_middle(&"x".repeat(40), 10)), 10);
         assert_eq!(cut("browser", 4), "bro…");
         let mut r = sample(4, vec![proc(10, &"long-name-".repeat(30), 9.1, 2 << 30)]);

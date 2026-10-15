@@ -149,12 +149,12 @@ Usage:
       asks the process to stop and waits 3 s; says if it is still there.
       --force kills it. By NAME it lists the matches and asks first; -y skips the question.
       -s sends that one signal and does not wait. :PORT is the process listening on it.
-  aether record [--to FILE] [--for DURATION] [-i SECS] [--only LIST]
+  aether record [--to FILE] [--all-procs] [--for DURATION] [-i SECS] [--only LIST]
       reads without drawing until Ctrl-C or DURATION (90s, 30m, 8h), then prints the peaks:
       the highest value of each reading, when, and the average; the five processes with the
       most CPU and the five with the most memory. --json prints that as one object.
-      --to FILE also writes one JSON line per reading, the processes cut to the 20 highest
-      by CPU and the 20 by memory.
+      --to FILE also writes one JSON line per reading, with the 10 processes using the most
+      CPU and the 10 using the most memory (pid, name, CPU, memory); --all-procs keeps all.
   aether peaks FILE
       the same summary from a file `record --to` wrote (or from any `aether --json` output)
   aether alert RULE... [--run CMD] [-i SECS] [--once]
@@ -190,6 +190,7 @@ Options:
   --no-keys              the full screen takes no keys and no mouse
   --no-mouse             the full screen takes keys but not the mouse
   --to FILE              record: also write every reading to FILE, one JSON line each
+  --all-procs            record: write every process, whole, on each line of --to FILE
   --for DURATION         record: stop after this long (90s, 30m, 8h; at most 720h)
   --run CMD              alert: the command run when a rule fires
   -s, --signal NAME|NUMBER  kill: the signal to send (TERM, SIGSTOP, 19; 1 to 64)
@@ -205,10 +206,16 @@ it was (time into the run) and the average; then the five processes with the hig
 five with the most memory at any moment. Memory stays flat however long it runs: it keeps
 running maxima and sums, not the readings. `--json` prints the summary as one object.
 
-`--to FILE` also writes one JSON line per reading, in the `--json` format. A line keeps only the
-20 processes with the highest CPU and the 20 with the most memory (a full list would be about
-80 kB a reading; a line is about 8 kB here). `aether peaks FILE` prints the same summary from
-such a file, or from any `aether --json` output.
+`--to FILE` also writes one JSON line per reading, in the `--json` format. Everything about the
+machine stays as it is (CPU and each thread, memory, GPUs, disks, networks, sensors, battery), but
+numbers are written with at most two decimals, and a line keeps only the processes that matter:
+the 10 with the highest CPU (those using any) and the 10 with the most memory, each as its pid,
+name, CPU and memory. `--all-procs` keeps every process, whole, as `--json` prints it (about
+115 kB a reading here). A line is about 2.3 kB on a machine with 12 threads, 2 disks, a GPU and
+15 kept processes: about 8 MB an hour, 66 MB for `--for 8h` at the default second; the
+processes are 0.9 kB of it. `aether peaks FILE` prints the same summary from such a file, from
+a file with every process, or from any `aether --json` output. In the summary long GPU and mount
+names are cut so that no line passes 100 columns.
 
 `aether alert 'cpu>90/30s' 'disk:/>95' --run 'notify-send full'` prints a line when a rule has
 held for its hold time (`fired`) and when it stops (`cleared`). Keys: `cpu`, `mem`, `swap`, `gpu`,

@@ -11,6 +11,71 @@ use std::io::Write;
 /// Appends one reading as one JSON object and a newline to `out`. `t` is always there; each
 /// other part is there when `--only` names it (the same names as the text form).
 pub fn write(reading: &Reading, view: &View, out: &mut Vec<u8>) {
+    write_with(reading, view, out, false);
+}
+
+/// One line of a recording: like `write`, but the numbers have at most two decimals and, unless
+/// `full`, each process is only its pid, name, CPU and memory (what `peaks` reads).
+pub fn write_record(reading: &Reading, view: &View, out: &mut Vec<u8>, full: bool) {
+    let from = out.len();
+    write_with(reading, view, out, !full);
+    let line = out.split_off(from);
+    shorten(&line, out);
+}
+
+/// Copies a JSON line, writing each number with a fraction as at most two decimals.
+fn shorten(line: &[u8], out: &mut Vec<u8>) {
+    let mut i = 0;
+    let mut quoted = false;
+    while i < line.len() {
+        let c = line[i];
+        if quoted {
+            out.push(c);
+            i += 1;
+            if c == b'\\' && i < line.len() {
+                out.push(line[i]);
+                i += 1;
+            } else if c == b'"' {
+                quoted = false;
+            }
+        } else if c == b'"' {
+            quoted = true;
+            out.push(c);
+            i += 1;
+        } else if c.is_ascii_digit() || c == b'-' {
+            let end = line[i..]
+                .iter()
+                .position(|b| {
+                    !(b.is_ascii_digit() || matches!(b, b'-' | b'.' | b'e' | b'E' | b'+'))
+                })
+                .map_or(line.len(), |n| i + n);
+            let token = &line[i..end];
+            let short = std::str::from_utf8(token)
+                .ok()
+                .filter(|t| {
+                    t.bytes().filter(|&b| b == b'.').count() == 1 && !t.contains(['e', 'E'])
+                })
+                .and_then(|t| t.split_once('.'))
+                .filter(|(_, f)| f.len() > 2)
+                .and_then(|(w, f)| format!("{w}.{f}").parse::<f64>().ok());
+            match short {
+                Some(v) => {
+                    let t = format!("{v:.2}");
+                    let t = t.trim_end_matches('0').trim_end_matches('.');
+                    out.extend_from_slice(if t == "-0" { "0" } else { t }.as_bytes());
+                }
+                None => out.extend_from_slice(token),
+            }
+            i = end;
+        } else {
+            out.push(c);
+            i += 1;
+        }
+    }
+}
+
+/// `write`, with `slim` processes when asked.
+fn write_with(reading: &Reading, view: &View, out: &mut Vec<u8>, slim: bool) {
     let mut o = Obj::open(out);
     o.key("t");
     float64(o.out, reading.t);
@@ -59,7 +124,11 @@ pub fn write(reading: &Reading, view: &View, out: &mut Vec<u8>) {
     }
     if view.shows("procs") {
         o.key("procs");
-        array(o.out, &reading.procs, proc_);
+        if slim {
+            array(o.out, &reading.procs, proc_slim);
+        } else {
+            array(o.out, &reading.procs, proc_);
+        }
     }
     o.close();
     put(out, "\n");
@@ -357,6 +426,16 @@ fn proc_(out: &mut Vec<u8>, p: &Proc) {
     o.close();
 }
 
+/// The part of a process a recording keeps.
+fn proc_slim(out: &mut Vec<u8>, p: &Proc) {
+    let mut o = Obj::open(out);
+    o.int("pid", Some(u64::from(p.pid)));
+    o.text("name", &p.name);
+    o.f32("cpu_pct", p.cpu_pct);
+    o.int("mem", Some(p.mem));
+    o.close();
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
@@ -485,5 +564,58 @@ mod tests {
             String::from_utf8(out).unwrap_or_default(),
             "\"a\\u0001\\tb\""
         );
+    }
+
+    #[test]
+    fn a_recorded_line_has_short_numbers_and_slim_processes() {
+        let mut r = Reading::default();
+        r.cpu.pct = Some(27.777_779);
+        r.cpu.threads = vec![0.5, 11.764_706];
+        r.t = 0.350_743_552;
+        r.procs.push(Proc {
+            pid: 7,
+            ppid: 1,
+            uid: 0,
+            threads: 1,
+            name: "a\"1.23456\"".into(),
+            state: b'S',
+            cpu_pct: Some(1.234_5),
+            gpu_pct: None,
+            mem: 5,
+            rss: 5,
+            started_s: 0,
+            vram: None,
+            read_bps: None,
+            write_bps: None,
+        });
+        let view = View {
+            disks: None,
+            nets: None,
+            by: Sort::Cpu,
+            reverse: false,
+            steady: false,
+            filter: None,
+            flat: false,
+            tree: false,
+            all: false,
+            only: None,
+        };
+        let mut slim = Vec::new();
+        write_record(&r, &view, &mut slim, false);
+        let text = String::from_utf8(slim).unwrap();
+        assert!(text.contains("\"t\":0.35,"), "{text}");
+        assert!(text.contains("27.78"), "{text}");
+        assert!(text.contains("[0.5,11.76]"), "{text}");
+        assert!(
+            text.contains(
+                "\"procs\":[{\"pid\":7,\"name\":\"a\\\"1.23456\\\"\",\"cpu_pct\":1.23,\"mem\":5}]"
+            ),
+            "{text}"
+        );
+        let mut full = Vec::new();
+        write_record(&r, &view, &mut full, true);
+        let text = String::from_utf8(full).unwrap();
+        assert!(text.contains("\"ppid\":1"), "{text}");
+        assert!(text.contains("\"cpu_pct\":1.23,"), "{text}");
     }
 }

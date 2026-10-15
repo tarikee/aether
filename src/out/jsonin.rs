@@ -212,10 +212,36 @@ fn need_whole(o: Fields<'_>, k: &str) -> Result<u64, String> {
     whole(o, k)?.ok_or_else(|| format!("{k} is null"))
 }
 
+/// A whole number a slim recording leaves out: 0 when the key is missing.
+fn whole_or_0(o: Fields<'_>, k: &str) -> Result<u64, String> {
+    if o.iter().any(|(n, _)| n == k) {
+        need_whole(o, k)
+    } else {
+        Ok(0)
+    }
+}
+
 fn text(o: Fields<'_>, k: &str) -> Result<String, String> {
     match field(o, k)? {
         V::Str(s) => Ok(s.clone()),
         _ => Err(format!("{k} is not text")),
+    }
+}
+
+/// Like `whole` and `f32_of`, for keys a slim recording leaves out.
+fn opt_whole(o: Fields<'_>, k: &str) -> Result<Option<u64>, String> {
+    if o.iter().any(|(n, _)| n == k) {
+        whole(o, k)
+    } else {
+        Ok(None)
+    }
+}
+
+fn opt_f32(o: Fields<'_>, k: &str) -> Result<Option<f32>, String> {
+    if o.iter().any(|(n, _)| n == k) {
+        f32_of(o, k)
+    } else {
+        Ok(None)
     }
 }
 
@@ -312,19 +338,23 @@ pub fn reading(line: &str) -> Result<Reading, String> {
             let p = obj(p)?;
             r.procs.push(Proc {
                 pid: need_whole(p, "pid")? as u32,
-                ppid: need_whole(p, "ppid")? as u32,
-                uid: need_whole(p, "uid")? as u32,
-                threads: need_whole(p, "threads")? as u32,
+                ppid: whole_or_0(p, "ppid")? as u32,
+                uid: whole_or_0(p, "uid")? as u32,
+                threads: whole_or_0(p, "threads")? as u32,
                 name: text(p, "name")?,
-                state: text(p, "state")?.bytes().next().unwrap_or(b'?'),
+                state: match text(p, "state") {
+                    Ok(t) => t.bytes().next().unwrap_or(b'?'),
+                    Err(_) if !p.iter().any(|(n, _)| n == "state") => b'?',
+                    Err(m) => return Err(m),
+                },
                 cpu_pct: f32_of(p, "cpu_pct")?,
-                gpu_pct: f32_of(p, "gpu_pct")?,
+                gpu_pct: opt_f32(p, "gpu_pct")?,
                 mem: need_whole(p, "mem")?,
-                rss: need_whole(p, "rss")?,
-                started_s: need_whole(p, "started_s")?,
-                vram: whole(p, "vram")?,
-                read_bps: whole(p, "read_bps")?,
-                write_bps: whole(p, "write_bps")?,
+                rss: whole_or_0(p, "rss")?,
+                started_s: whole_or_0(p, "started_s")?,
+                vram: opt_whole(p, "vram")?,
+                read_bps: opt_whole(p, "read_bps")?,
+                write_bps: opt_whole(p, "write_bps")?,
             });
         }
     }

@@ -520,16 +520,24 @@ pub(crate) fn rate(v: Option<u64>) -> String {
 /// A byte count for people: "512 B", "1.5 KiB", "31.3 GiB".
 pub(crate) fn bytes(n: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
-    if n < 1024 {
+    let (v, i) = scale(n, 999.95);
+    if i == 0 {
         return format!("{n} B");
     }
+    format!("{v:.1} {}", UNITS[i])
+}
+
+/// A size as a number and the index of its unit (B, KiB, MiB, GiB, TiB). A number from `limit`
+/// up is the next unit's, so a size never shows as "1000.0 KiB"; `limit` is the smallest value
+/// that is written with four digits.
+pub(crate) fn scale(n: u64, limit: f64) -> (f64, usize) {
     let mut v = n as f64;
     let mut i = 0;
-    while v >= 1024.0 && i < UNITS.len() - 1 {
+    while (v >= 1024.0 || v >= limit) && i < 4 {
         v /= 1024.0;
         i += 1;
     }
-    format!("{v:.1} {}", UNITS[i])
+    (v, i)
 }
 
 /// Seconds as "3d 04h 12m", "1h 01m" or "12m 34s".
@@ -600,6 +608,14 @@ mod tests {
     fn byte_counts_and_uptime_read_for_people() {
         assert_eq!(bytes(0), "0 B");
         assert_eq!(bytes(1536), "1.5 KiB");
+        assert_eq!(bytes(999), "999 B");
+        assert_eq!(bytes(1000), "1.0 KiB");
+        assert_eq!(bytes(999 * 1024 + 970), "999.9 KiB");
+        assert_eq!(bytes(1000 * 1024), "1.0 MiB");
+        assert_eq!(bytes((1023.99 * 1024.0) as u64), "1.0 MiB");
+        assert_eq!(bytes(1000 * 1024 * 1024), "1.0 GiB");
+        assert_eq!(bytes(1000 * 1024 * 1024 * 1024), "1.0 TiB");
+        assert_eq!(bytes(5000 * 1024 * 1024 * 1024 * 1024), "5000.0 TiB");
         assert_eq!(bytes(1 << 30), "1.0 GiB");
         assert_eq!(bytes(3 << 40), "3.0 TiB");
         assert_eq!(uptime(754), "12m 34s");
