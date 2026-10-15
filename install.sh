@@ -2,7 +2,7 @@
 # Installs aether from its latest release, or from AETHER_VERSION (e.g. v0.1.1):
 #   curl -fsSL https://raw.githubusercontent.com/tarikee/aether/main/install.sh | sh
 # It goes to AETHER_INSTALL_DIR, by default /usr/local/bin (with sudo only when needed).
-# Running it again updates aether.
+# Running it again updates aether, in the folder where the PATH finds it.
 set -eu
 
 repo=tarikee/aether
@@ -68,7 +68,21 @@ main() {
     [ "$(sha256 "$tmp/$name.tar.gz")" = "$want" ] || fail "$name.tar.gz does not match SHA256SUMS"
     tar -xzf "$tmp/$name.tar.gz" -C "$tmp"
 
-    dir=${AETHER_INSTALL_DIR:-/usr/local/bin}
+    dir=${AETHER_INSTALL_DIR:-}
+    if [ -z "$dir" ]; then
+        # Running it again updates the aether already on the PATH, where it is, when that
+        # folder can be written without sudo (a copy cargo manages is left to cargo).
+        found=$(command -v aether 2>/dev/null || true)
+        case $found in
+            /*/aether)
+                old=${found%/aether}
+                if [ -w "$old" ] && [ "$old" != "$HOME/.cargo/bin" ]; then
+                    dir=$old
+                fi
+                ;;
+        esac
+    fi
+    dir=${dir:-/usr/local/bin}
     sudo=
     if ! mkdir -p "$dir" 2>/dev/null || [ ! -w "$dir" ]; then
         [ -z "${AETHER_INSTALL_DIR:-}" ] || fail "cannot write to $dir"
