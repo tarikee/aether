@@ -14,8 +14,13 @@ pub struct Mem {
 
 impl Mem {
     pub fn open(_root: &Root) -> Mem {
+        let (ram_type, ram_mts) = crate::sys::smbios::parse(&calls::smbios_table());
         Mem {
-            sample: MemSample::default(),
+            sample: MemSample {
+                ram_type,
+                ram_mts,
+                ..MemSample::default()
+            },
             buf: Vec::new(),
             page: 0,
         }

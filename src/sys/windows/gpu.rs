@@ -73,6 +73,8 @@ impl Gpus {
             vram_used: None,
             vram_total: (a.vram_total > 0).then_some(a.vram_total),
             fan_rpm: None,
+            mhz: None,
+            mem_mhz: None,
         });
     }
 }
@@ -98,6 +100,7 @@ fn read_card(card: &mut Card, sample: &mut GpuSample) {
         *last = t;
     }
     sample.pct = busiest;
+    (sample.mhz, sample.mem_mhz) = calls::gpu_clocks(card.luid);
     if sample.vram_total.is_some() {
         sample.vram_used = (0..card.segments)
             .filter_map(|s| calls::gpu_segment(card.luid, s))

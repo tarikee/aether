@@ -114,7 +114,13 @@ fn mem(out: &mut Vec<u8>, m: &MemSample) {
         bytes(m.available),
         bytes(m.cached)
     );
-    line(out, "mem", &used);
+    let ram = match (m.ram_type.as_deref(), m.ram_mts) {
+        (Some(kind), Some(mts)) => format!("  {kind} {mts} MT/s"),
+        (Some(kind), None) => format!("  {kind}"),
+        (None, Some(mts)) => format!("  {mts} MT/s"),
+        (None, None) => String::new(),
+    };
+    line(out, "mem", &format!("{used}{ram}"));
     let pressure = opt_f32(m.pressure, 1, "%");
     let swap = format!(
         "swap {} of {}  pressure {pressure}",
@@ -142,7 +148,13 @@ fn gpus(out: &mut Vec<u8>, gpus: &[GpuSample]) {
         let pct = opt_f32(g.pct, 0, "%");
         let temp = opt_f32(g.temp_c, 0, " °C");
         let power = opt_f32(g.power_w, 1, " W");
-        let content = format!("{}  {pct}  vram {vram}  {temp}  {power}  fan {fan}", g.name);
+        let clock = |mhz: Option<u32>| mhz.map_or("-".to_string(), |m| m.to_string());
+        let content = format!(
+            "{}  {pct}  vram {vram}  {temp}  {power}  fan {fan}  {} MHz  mem {} MHz",
+            g.name,
+            clock(g.mhz),
+            clock(g.mem_mhz)
+        );
         line(out, label, &content);
     }
 }
@@ -661,6 +673,50 @@ mod tests {
         assert!(text.contains("cpu     -  -  -  -  load -\n"), "{text}");
         assert!(text.contains("battery -\n"), "{text}");
         assert!(text.contains("gpu     -\n"), "{text}");
+    }
+
+    #[test]
+    fn gpu_clocks_and_ram_kind_and_speed_show_when_known() {
+        let card = |mhz, mem_mhz| GpuSample {
+            name: "card".to_string(),
+            vendor: "amd",
+            pct: None,
+            temp_c: None,
+            power_w: None,
+            vram_used: None,
+            vram_total: None,
+            fan_rpm: None,
+            mhz,
+            mem_mhz,
+        };
+        let mem = |ram_type: Option<&str>, ram_mts| MemSample {
+            ram_type: ram_type.map(str::to_string),
+            ram_mts,
+            ..MemSample::default()
+        };
+        let show = |m: MemSample, gpus: Vec<GpuSample>| {
+            let r = Reading {
+                mem: m,
+                gpus,
+                ..Reading::default()
+            };
+            render(&r, &view(Some(&["mem", "gpu"]), false, Sort::Cpu))
+        };
+        let both = show(
+            mem(Some("DDR4"), Some(2666)),
+            vec![card(Some(1250), Some(2000))],
+        );
+        assert!(both.contains("  DDR4 2666 MT/s\n"), "{both}");
+        assert!(both.contains("  1250 MHz  mem 2000 MHz\n"), "{both}");
+        let speed = show(mem(None, Some(2666)), vec![card(None, Some(2000))]);
+        assert!(speed.contains("  2666 MT/s\n"), "{speed}");
+        assert!(speed.contains("  - MHz  mem 2000 MHz\n"), "{speed}");
+        let kind = show(mem(Some("DDR5"), None), vec![card(Some(900), None)]);
+        assert!(kind.contains("  DDR5\n"), "{kind}");
+        assert!(kind.contains("  900 MHz  mem - MHz\n"), "{kind}");
+        let none = show(mem(None, None), vec![]);
+        assert!(!none.contains("MT/s"), "{none}");
+        assert!(none.contains("used of"), "{none}");
     }
 
     #[test]

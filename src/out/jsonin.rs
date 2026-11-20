@@ -237,6 +237,14 @@ fn opt_whole(o: Fields<'_>, k: &str) -> Result<Option<u64>, String> {
     }
 }
 
+/// Text that a slim recording or a null leaves out.
+fn opt_text(o: Fields<'_>, k: &str) -> Result<Option<String>, String> {
+    match o.iter().find(|(n, _)| n == k) {
+        None | Some((_, V::Null)) => Ok(None),
+        Some(_) => text(o, k).map(Some),
+    }
+}
+
 fn opt_f32(o: Fields<'_>, k: &str) -> Result<Option<f32>, String> {
     if o.iter().any(|(n, _)| n == k) {
         f32_of(o, k)
@@ -272,6 +280,8 @@ pub fn reading(line: &str) -> Result<Reading, String> {
             used: need_whole(m, "used")?,
             swap_total: need_whole(m, "swap_total")?,
             swap_used: need_whole(m, "swap_used")?,
+            ram_type: opt_text(m, "ram_type")?,
+            ram_mts: opt_whole(m, "ram_mts")?.map(|n| n as u32),
             ..MemSample::default()
         };
     }
@@ -287,6 +297,8 @@ pub fn reading(line: &str) -> Result<Reading, String> {
                 vram_used: whole(g, "vram_used")?,
                 vram_total: whole(g, "vram_total")?,
                 fan_rpm: None,
+                mhz: opt_whole(g, "mhz")?.map(|n| n as u32),
+                mem_mhz: opt_whole(g, "mem_mhz")?.map(|n| n as u32),
             });
         }
     }
@@ -407,6 +419,21 @@ mod tests {
             &V::Arr(vec![V::Num(1.0), V::Num(-2.5), V::Null])
         );
         assert_eq!(text(o, "b").unwrap(), "x\"\\\n\u{1}é");
+    }
+
+    #[test]
+    fn clocks_and_ram_are_read_back_or_null() {
+        let r = reading(
+            r#"{"t":1,"mem":{"total":1,"used":0,"swap_total":0,"swap_used":0,"ram_type":"DDR4","ram_mts":2666},"gpus":[{"name":"g","pct":null,"temp_c":null,"vram_used":null,"vram_total":null,"mhz":1250,"mem_mhz":null}]}"#,
+        )
+        .unwrap();
+        assert_eq!(r.mem.ram_type.as_deref(), Some("DDR4"));
+        assert_eq!(r.mem.ram_mts, Some(2666));
+        assert_eq!(r.gpus[0].mhz, Some(1250));
+        assert_eq!(r.gpus[0].mem_mhz, None);
+        let older = reading(r#"{"t":1,"mem":{"total":1,"used":0,"swap_total":0,"swap_used":0,"ram_type":null,"ram_mts":null}}"#).unwrap();
+        assert_eq!(older.mem.ram_type, None);
+        assert_eq!(older.mem.ram_mts, None);
     }
 
     #[test]

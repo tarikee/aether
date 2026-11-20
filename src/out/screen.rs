@@ -1505,6 +1505,19 @@ fn mem_meters(d: &Data) -> Vec<Meter> {
     out
 }
 
+/// The system RAM's kind and configured speed, such as `DDR4 2666 MT/s`, the parts it knows.
+fn ram_fact(d: &Data, colour: bool) -> Option<Line> {
+    let m = &d.r.mem;
+    match (m.ram_type.as_deref(), m.ram_mts) {
+        (Some(kind), Some(mts)) => {
+            Some(fact(colour, &format!("{kind} {mts}"), " MT/s", Role::Plain))
+        }
+        (Some(kind), None) => Some(fact(colour, kind, "", Role::Plain)),
+        (None, Some(mts)) => Some(fact(colour, &mts.to_string(), " MT/s", Role::Plain)),
+        (None, None) => None,
+    }
+}
+
 /// Memory: used, cached and swap with their bars, then the graph of memory used.
 fn mem_box(d: &Data, w: usize, rows: usize) -> Vec<Line> {
     let (cw, colour) = (w.saturating_sub(4), d.colour);
@@ -1512,22 +1525,24 @@ fn mem_box(d: &Data, w: usize, rows: usize) -> Vec<Line> {
     let g = rows.saturating_sub(body.len());
     let (graph, shown, _) = graph(&d.hist.mem, g, cw, Some(100.0), true, colour);
     body.extend(graph);
+    let facts: Vec<Line> = ram_fact(d, colour).into_iter().collect();
     let foot = bottom(w, colour, None, span(d, shown).as_ref());
     framed(
         w,
         colour,
-        top(w, colour, "Memory", &[], None),
+        top(w, colour, "Memory", &facts, None),
         body,
         rows,
         foot,
     )
 }
 
-/// The lines a GPU's numbers take: use, VRAM, and its temperature, fan and power.
+/// The lines a GPU's numbers take: use, VRAM, its temperature, fan and power, and its clocks.
 fn gpu_lines(g: &GpuSample) -> usize {
     usize::from(g.pct.is_some())
         + usize::from(g.vram_used.is_some())
         + usize::from(g.temp_c.is_some() || g.fan_rpm.is_some() || g.power_w.is_some())
+        + usize::from(g.mhz.is_some() || g.mem_mhz.is_some())
 }
 
 fn gpu_meters(g: &GpuSample, label: &'static str, colour: bool) -> Vec<Meter> {
@@ -1587,6 +1602,23 @@ fn gpu_facts(g: &GpuSample, cw: usize, colour: bool) -> Option<Line> {
     (l.width > 0).then_some(l)
 }
 
+/// The GPU's graphics and memory clocks on one line, the parts it knows.
+fn gpu_clocks(g: &GpuSample, cw: usize, colour: bool) -> Option<Line> {
+    let mut l = Line::new(cw, colour);
+    if let Some(mhz) = g.mhz {
+        l.plain("core ");
+        l.measure(&mhz.to_string(), " MHz", Role::Plain);
+    }
+    if let Some(mhz) = g.mem_mhz {
+        if l.width > 0 {
+            l.dot();
+        }
+        l.plain("mem ");
+        l.measure(&mhz.to_string(), " MHz", Role::Plain);
+    }
+    (l.width > 0).then_some(l)
+}
+
 /// One GPU, named in the border: use, VRAM, its temperature, fan and power, then the graph of
 /// its use (the first GPU's; the history follows that one).
 fn gpu_box(d: &Data, i: usize, w: usize, rows: usize) -> Vec<Line> {
@@ -1603,6 +1635,7 @@ fn gpu_box(d: &Data, i: usize, w: usize, rows: usize) -> Vec<Line> {
     };
     let mut body = meters(cw, colour, &gpu_meters(g, "use", colour));
     body.extend(gpu_facts(g, cw, colour));
+    body.extend(gpu_clocks(g, cw, colour));
     let mut shown = 0;
     if i == 0 {
         let gr = rows.saturating_sub(body.len());
@@ -1649,15 +1682,13 @@ fn mem_gpu_box(d: &Data, w: usize, rows: usize) -> Vec<Line> {
         body.extend(lines.by_ref().take(end - at));
         at = end;
         body.extend(gpu_facts(g, cw, colour));
+        body.extend(gpu_clocks(g, cw, colour));
         if i == 0 {
             body.extend(graph(&d.hist.gpu, gg, cw, Some(100.0), true, colour).0);
         }
     }
-    let facts: Vec<Line> =
-        d.r.gpus
-            .iter()
-            .map(|g| words(colour, &g.name, Role::Plain))
-            .collect();
+    let mut facts: Vec<Line> = ram_fact(d, colour).into_iter().collect();
+    facts.extend(d.r.gpus.iter().map(|g| words(colour, &g.name, Role::Plain)));
     let title = if d.r.gpus.is_empty() {
         "Memory"
     } else {
@@ -3001,6 +3032,8 @@ mod tests {
         ];
         r.mem.swap_total = 8 * 1024 * 1024 * 1024;
         r.mem.swap_used = 200 * 1024 * 1024;
+        r.mem.ram_type = Some("DDR4".to_string());
+        r.mem.ram_mts = Some(2666);
         r.gpus.push(GpuSample {
             name: "Example 580".to_string(),
             vendor: "example",
@@ -3010,6 +3043,8 @@ mod tests {
             vram_used: Some(2_254_857_830),
             vram_total: Some(4_294_967_296),
             fan_rpm: Some(1180),
+            mhz: Some(1250),
+            mem_mhz: Some(2000),
         });
         for (chip, label, kind, value) in [
             ("cpu", "package", SensorKind::Temp, 61.0),
@@ -3237,6 +3272,8 @@ mod tests {
             vram_used: None,
             vram_total: None,
             fan_rpm: None,
+            mhz: None,
+            mem_mhz: None,
         });
         r.nets[0].link_bps = Some(100_000_000);
         let first = |r: &Reading, cols: usize| {
@@ -3674,9 +3711,10 @@ mod tests {
         let cpu_rows = |f: &[String]| f[1..].iter().position(|l| l.starts_with('╰')).unwrap() + 1;
         assert_eq!(cpu_rows(&tall), 2 + 1 + 8 + 2);
         assert!(cpu_rows(&short) < cpu_rows(&tall));
-        // The short screen gave up the memory graph: its box ends under its three lines.
+        // The short screen gave up most of the memory graph: its box ends under its three lines
+        // and one row of graph, the share the plan had left over.
         let m = short.iter().position(|l| l.contains("╭─ Memory")).unwrap();
-        assert!(short[m + 4].contains("│╰"), "{}", short[m + 4]);
+        assert!(short[m + 5].contains("│╰"), "{}", short[m + 5]);
         // Above the processes: at most 55 % of a tall screen.
         let at = tall
             .iter()

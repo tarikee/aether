@@ -284,6 +284,7 @@ type UtilFn = unsafe extern "C" fn(*mut c_void, *mut NvUtilization) -> c_int;
 type MemoryFn = unsafe extern "C" fn(*mut c_void, *mut NvMemory) -> c_int;
 type TempFn = unsafe extern "C" fn(*mut c_void, c_int, *mut c_uint) -> c_int;
 type PowerFn = unsafe extern "C" fn(*mut c_void, *mut c_uint) -> c_int;
+type ClockFn = unsafe extern "C" fn(*mut c_void, c_uint, *mut c_uint) -> c_int;
 type ProcsFn = unsafe extern "C" fn(*mut c_void, *mut c_uint, *mut NvProcInfo) -> c_int;
 type SamplesFn = unsafe extern "C" fn(*mut c_void, *mut NvSample, *mut c_uint, u64) -> c_int;
 
@@ -302,6 +303,8 @@ pub struct Nvml {
     graphics: ProcsFn,
     /// Missing on some drivers: then the per-process percent is unknown.
     samples: Option<SamplesFn>,
+    /// Missing on some drivers: then the clocks are unknown.
+    clock: Option<ClockFn>,
 }
 
 /// The NVML session of this run: loaded on first use, and never tried again. `None` when the
@@ -359,6 +362,7 @@ fn from_lib(lib: *mut c_void) -> Option<Nvml> {
         compute: func(lib, c"nvmlDeviceGetComputeRunningProcesses_v3")?,
         graphics: func(lib, c"nvmlDeviceGetGraphicsRunningProcesses_v3")?,
         samples: func(lib, c"nvmlDeviceGetProcessUtilization"),
+        clock: func(lib, c"nvmlDeviceGetClockInfo"),
     })
 }
 
@@ -423,6 +427,15 @@ impl Nvml {
         let mut mw: c_uint = 0;
         // SAFETY: NVML writes one unsigned int, which we pass.
         (unsafe { (self.power)(dev as *mut c_void, &mut mw) } == NVML_OK).then_some(mw)
+    }
+
+    /// The device's clock in MHz: `kind` 0 is the graphics clock, 2 the memory clock. `None`
+    /// when NVML does not say or has no such function.
+    pub fn clock_mhz(&self, dev: NvDevice, kind: u32) -> Option<u32> {
+        let f = self.clock?;
+        let mut mhz: c_uint = 0;
+        // SAFETY: NVML writes one unsigned int, which we pass; `kind` is a clock type it knows.
+        (unsafe { f(dev as *mut c_void, kind, &mut mhz) } == NVML_OK).then_some(mhz)
     }
 
     /// The compute (or, if `graphics`, graphics) processes on `dev`, into `out`. False when NVML

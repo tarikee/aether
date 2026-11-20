@@ -26,6 +26,8 @@ impl Gpus {
                 vram_used: None,
                 vram_total: None,
                 fan_rpm: None,
+                mhz: None,
+                mem_mhz: None,
             })
             .collect();
         Gpus { found, list }

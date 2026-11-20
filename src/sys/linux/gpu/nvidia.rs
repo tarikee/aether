@@ -24,6 +24,10 @@ fn devices(nvml: &Nvml) -> Vec<NvDevice> {
     (0..n).filter_map(|i| nvml.device(i)).collect()
 }
 
+/// NVML's clock types: the graphics (core) clock and the memory clock.
+const CLOCK_GRAPHICS: u32 = 0;
+const CLOCK_MEM: u32 = 2;
+
 /// One NVIDIA card.
 pub struct Card {
     nvml: &'static Nvml,
@@ -58,6 +62,8 @@ impl Card {
             vram_used: None,
             vram_total: None,
             fan_rpm: None,
+            mhz: None,
+            mem_mhz: None,
         }
     }
 
@@ -71,6 +77,8 @@ impl Card {
         out.temp_c = self.nvml.temperature(self.dev).map(|t| t as f32);
         out.power_w = self.nvml.power_mw(self.dev).map(|mw| mw as f32 / 1000.0);
         out.fan_rpm = None;
+        out.mhz = self.nvml.clock_mhz(self.dev, CLOCK_GRAPHICS);
+        out.mem_mhz = self.nvml.clock_mhz(self.dev, CLOCK_MEM);
     }
 }
 

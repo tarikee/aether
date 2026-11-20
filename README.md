@@ -245,8 +245,8 @@ Every object carries `schema`; it goes up when a field is removed or changes mea
 |---|---|
 | `t` | time of the reading, in seconds |
 | `cpu` | `pct` (whole machine, %), `threads` and `threads_mhz` (one value per thread), `mhz`, `temp_c`, `power_w`, `load` (1, 5 and 15 minute averages) |
-| `mem` | `total`, `used`, `available`, `cached`, `swap_total`, `swap_used` (bytes); `pressure` (%) |
-| `gpus` | list: `name`, `vendor`, `pct`, `temp_c`, `power_w`, `vram_used`, `vram_total` (bytes), `fan_rpm` |
+| `mem` | `total`, `used`, `available`, `cached`, `swap_total`, `swap_used` (bytes); `pressure` (%); `ram_type` (such as `DDR4`), `ram_mts` (MT/s) |
+| `gpus` | list: `name`, `vendor`, `pct`, `temp_c`, `power_w`, `vram_used`, `vram_total` (bytes), `fan_rpm`, `mhz` (graphics clock), `mem_mhz` (memory clock), both MHz |
 | `sensors` | list: `chip`, `label`, `kind` (temp, fan or power), `value` |
 | `disks` | list: `mount`, `dev`, `total`, `used` (bytes), `read_bps`, `write_bps`, `busy_pct` |
 | `nets` | list: `name`, `rx_bps`, `tx_bps`, `link_bps`, `addrs` |

@@ -19,6 +19,8 @@ pub struct Card {
     power: Option<Input>,
     energy: Option<PFile>,
     energy_last: Option<(u64, Instant)>,
+    /// The current graphics clock in MHz (i915 or xe).
+    act_freq: Option<PFile>,
 }
 
 /// Opens the card whose `device` folder is `dev`, if its driver is i915 or xe.
@@ -53,7 +55,24 @@ pub fn open(dev: &Path) -> Option<Card> {
         power,
         energy,
         energy_last: None,
+        act_freq: act_freq(dev),
     })
+}
+
+/// The current clock file: i915's `gt_act_freq_mhz` under the card's drm folder, else xe's
+/// `tile0/gt0/freq0/act_freq`. Both are in MHz.
+fn act_freq(dev: &Path) -> Option<PFile> {
+    let i915 = fs::read_dir(dev.join("drm"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| {
+            e.file_name()
+                .to_str()
+                .is_some_and(|n| n.starts_with("card"))
+        })
+        .find_map(|e| PFile::open(&e.path().join("gt_act_freq_mhz"), 64));
+    i915.or_else(|| PFile::open(&dev.join("tile0/gt0/freq0/act_freq"), 64))
 }
 
 impl Card {
@@ -68,6 +87,8 @@ impl Card {
             vram_used: None,
             vram_total: None,
             fan_rpm: None,
+            mhz: None,
+            mem_mhz: None,
         }
     }
 
@@ -87,6 +108,13 @@ impl Card {
             .as_mut()
             .and_then(Input::value)
             .or_else(|| self.energy_watts(now));
+        out.mhz = self
+            .act_freq
+            .as_mut()
+            .and_then(number)
+            .and_then(|m| u32::try_from(m).ok());
+        // The memory clock is not read on Intel cards.
+        out.mem_mhz = None;
     }
 
     /// The power from the energy counter (µJ), as its rate since the last reading. `None` on the
@@ -181,6 +209,40 @@ mod tests {
         assert_eq!(out.vram_total, Some(4_294_967_296));
         assert_eq!(out.power_w, Some(12.5));
         assert_eq!(out.temp_c, None);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_i915_card_reads_its_clock_in_mhz_from_its_drm_folder() {
+        let root = tree(
+            "i915clock",
+            "i915",
+            &[
+                ("device", "0x56a0\n"),
+                ("drm/card0/gt_act_freq_mhz", "350\n"),
+            ],
+        );
+        let mut card = open(&dev_of(&root)).expect("an i915 card");
+        let mut out = card.blank();
+        card.read_at(&mut out, Instant::now());
+        assert_eq!((out.mhz, out.mem_mhz), (Some(350), None));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_xe_card_reads_its_clock_in_mhz_from_tile0() {
+        let root = tree(
+            "xeclock",
+            "xe",
+            &[
+                ("device", "0xe20b\n"),
+                ("tile0/gt0/freq0/act_freq", "1200\n"),
+            ],
+        );
+        let mut card = open(&dev_of(&root)).expect("an xe card");
+        let mut out = card.blank();
+        card.read_at(&mut out, Instant::now());
+        assert_eq!((out.mhz, out.mem_mhz), (Some(1200), None));
         let _ = fs::remove_dir_all(&root);
     }
 

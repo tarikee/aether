@@ -553,6 +553,8 @@ mod tests {
                 power_w: None,
                 vram_total: None,
                 fan_rpm: None,
+                mhz: None,
+                mem_mhz: None,
             });
             r.disks.push(DiskSample {
                 mount: "/run/media/tarike/0b3a1f2c-5d4e-4f60-8a9b-c1d2e3f4a5b6".into(),

@@ -19,6 +19,9 @@ pub struct Card {
     temp: Option<Input>,
     fan: Option<Input>,
     power: Option<Input>,
+    /// The graphics clock (`sclk`) and the memory clock (`mclk`), in Hz.
+    core_clock: Option<PFile>,
+    mem_clock: Option<PFile>,
 }
 
 /// Opens the card whose `device` folder is `dev`, if it is an AMD card.
@@ -40,6 +43,7 @@ pub fn open(root: &Root, dev: &Path) -> Option<Card> {
         power = take_input(&mut monitor.inputs, SensorKind::Power, 1);
     }
 
+    let (core_clock, mem_clock) = clock_inputs(&dev.join("hwmon"));
     let file = |n: &str| PFile::open(&dev.join(n), 64);
     Some(Card {
         name,
@@ -49,7 +53,53 @@ pub fn open(root: &Root, dev: &Path) -> Option<Card> {
         temp,
         fan,
         power,
+        core_clock,
+        mem_clock,
     })
+}
+
+/// The `sclk` and `mclk` inputs of the card's monitor folders, kept open. A label names a clock
+/// in `freqN_label`; its reading is in `freqN_input`.
+fn clock_inputs(hwmon: &Path) -> (Option<PFile>, Option<PFile>) {
+    let (mut core, mut mem) = (None, None);
+    for dir in hwmon_dirs(hwmon) {
+        for (n, label) in freq_labels(&dir) {
+            let slot = match label.as_str() {
+                "sclk" => &mut core,
+                "mclk" => &mut mem,
+                _ => continue,
+            };
+            if slot.is_none() {
+                *slot = PFile::open(&dir.join(format!("freq{n}_input")), 64);
+            }
+        }
+    }
+    (core, mem)
+}
+
+/// The number and label of each `freqN_label` file in a monitor folder.
+fn freq_labels(dir: &Path) -> Vec<(u32, String)> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name();
+            let n = name
+                .to_str()?
+                .strip_prefix("freq")?
+                .strip_suffix("_label")?
+                .parse()
+                .ok()?;
+            Some((n, text(&e.path())?))
+        })
+        .collect()
+}
+
+/// A clock reading in Hz as whole MHz.
+fn mhz_of(hz: u64) -> Option<u32> {
+    u32::try_from(hz / 1_000_000).ok()
 }
 
 /// The name of a device in `usr/share/hwdata/pci.ids`, under the AMD vendor. `id` is as the
@@ -98,6 +148,8 @@ impl Card {
             vram_used: None,
             vram_total: None,
             fan_rpm: None,
+            mhz: None,
+            mem_mhz: None,
         }
     }
 
@@ -114,6 +166,8 @@ impl Card {
             .and_then(Input::value)
             .filter(|r| r.is_finite() && *r >= 0.0)
             .map(|r| r as u32);
+        out.mhz = self.core_clock.as_mut().and_then(number).and_then(mhz_of);
+        out.mem_mhz = self.mem_clock.as_mut().and_then(number).and_then(mhz_of);
     }
 }
 
@@ -131,5 +185,59 @@ mod tests {
         );
         assert_eq!(device_name(&root, "0x1234"), None);
         assert_eq!(device_name(&root, ""), None);
+    }
+
+    /// A made-up sysfs card folder: `files` are the `(path below the device, text)` pairs.
+    fn card_tree(name: &str, files: &[(&str, &str)]) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!("aether-amd-{}-{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let dev = root.join("sys/class/drm/card0/device");
+        for (rel, text) in files {
+            let path = dev.join(rel);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        }
+        root
+    }
+
+    #[test]
+    fn the_sclk_and_mclk_inputs_read_in_mhz() {
+        let root = card_tree(
+            "clocks",
+            &[
+                ("vendor", "0x1002\n"),
+                ("hwmon/hwmon2/freq1_label", "sclk\n"),
+                ("hwmon/hwmon2/freq1_input", "1250000000\n"),
+                ("hwmon/hwmon2/freq2_label", "mclk\n"),
+                ("hwmon/hwmon2/freq2_input", "2000000000\n"),
+                ("hwmon/hwmon2/freq3_label", "vddgfx\n"),
+                ("hwmon/hwmon2/freq3_input", "900000000\n"),
+            ],
+        );
+        let dev = root.join("sys/class/drm/card0/device");
+        let mut card = open(&Root::at(&root), &dev).expect("an AMD card");
+        let mut out = card.blank();
+        assert_eq!((out.mhz, out.mem_mhz), (None, None));
+        card.read(&mut out);
+        assert_eq!((out.mhz, out.mem_mhz), (Some(1250), Some(2000)));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_card_without_clock_labels_has_no_clocks() {
+        let root = card_tree(
+            "bare",
+            &[
+                ("vendor", "0x1002\n"),
+                ("hwmon/hwmon1/freq1_label", "vddgfx\n"),
+                ("hwmon/hwmon1/freq1_input", "900000000\n"),
+            ],
+        );
+        let dev = root.join("sys/class/drm/card0/device");
+        let mut card = open(&Root::at(&root), &dev).expect("an AMD card");
+        let mut out = card.blank();
+        card.read(&mut out);
+        assert_eq!((out.mhz, out.mem_mhz), (None, None));
+        let _ = fs::remove_dir_all(&root);
     }
 }

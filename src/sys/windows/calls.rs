@@ -9,12 +9,14 @@ use std::ptr::{null, null_mut};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use windows_sys::Wdk::Graphics::Direct3D::{
-    D3DKMTCloseAdapter, D3DKMTEnumAdapters2, D3DKMTQueryAdapterInfo, D3DKMTQueryStatistics,
-    D3DKMT_ADAPTERINFO, D3DKMT_ADAPTERREGISTRYINFO, D3DKMT_ADAPTERTYPE, D3DKMT_CLOSEADAPTER,
-    D3DKMT_ENUMADAPTERS2, D3DKMT_QUERYADAPTERINFO, D3DKMT_QUERYSTATISTICS,
+    D3DKMTCloseAdapter, D3DKMTEnumAdapters2, D3DKMTOpenAdapterFromLuid, D3DKMTQueryAdapterInfo,
+    D3DKMTQueryStatistics, D3DKMT_ADAPTERINFO, D3DKMT_ADAPTERREGISTRYINFO, D3DKMT_ADAPTERTYPE,
+    D3DKMT_ADAPTER_PERFDATA, D3DKMT_CLOSEADAPTER, D3DKMT_ENUMADAPTERS2, D3DKMT_NODE_PERFDATA,
+    D3DKMT_OPENADAPTERFROMLUID, D3DKMT_QUERYADAPTERINFO, D3DKMT_QUERYSTATISTICS,
     D3DKMT_QUERYSTATISTICS_ADAPTER, D3DKMT_QUERYSTATISTICS_NODE, D3DKMT_QUERYSTATISTICS_SEGMENT,
-    D3DKMT_QUERY_DEVICE_IDS, D3DKMT_SEGMENTSIZEINFO, KMTQAITYPE_ADAPTERREGISTRYINFO,
-    KMTQAITYPE_ADAPTERTYPE, KMTQAITYPE_GETSEGMENTSIZE, KMTQAITYPE_PHYSICALADAPTERDEVICEIDS,
+    D3DKMT_QUERY_DEVICE_IDS, D3DKMT_SEGMENTSIZEINFO, KMTQAITYPE_ADAPTERPERFDATA,
+    KMTQAITYPE_ADAPTERREGISTRYINFO, KMTQAITYPE_ADAPTERTYPE, KMTQAITYPE_GETSEGMENTSIZE,
+    KMTQAITYPE_NODEPERFDATA, KMTQAITYPE_PHYSICALADAPTERDEVICEIDS,
 };
 use windows_sys::Wdk::System::SystemInformation::{
     NtQuerySystemInformation, SystemProcessInformation, SystemProcessorPerformanceInformation,
@@ -64,7 +66,8 @@ use windows_sys::Win32::System::Power::{
 };
 use windows_sys::Win32::System::ProcessStatus::{GetPerformanceInfo, PERFORMANCE_INFORMATION};
 use windows_sys::Win32::System::SystemInformation::{
-    GetLocalTime, GetSystemInfo, GetSystemTimeAsFileTime, GetTickCount64, SYSTEM_INFO,
+    GetLocalTime, GetSystemFirmwareTable, GetSystemInfo, GetSystemTimeAsFileTime, GetTickCount64,
+    RSMB, SYSTEM_INFO,
 };
 use windows_sys::Win32::System::Threading::{
     GetActiveProcessorCount, GetProcessTimes, GetSystemTimes, GetThreadTimes, OpenProcess,
@@ -1069,6 +1072,56 @@ pub fn adapters(out: &mut Vec<Adapter>) {
             software: bits & 4 != 0,
         });
     }
+}
+
+/// The card's clocks in MHz (core, memory), from the adapter and node performance data.
+/// Needs WDDM 2.4 or later and a driver that fills it in; otherwise, or when a reading is 0,
+/// `None`. A failure is never an error.
+pub fn gpu_clocks(luid: LUID) -> (Option<u32>, Option<u32>) {
+    let mut open = D3DKMT_OPENADAPTERFROMLUID {
+        AdapterLuid: luid,
+        hAdapter: 0,
+    };
+    // SAFETY: a valid in-out structure.
+    if unsafe { D3DKMTOpenAdapterFromLuid(&mut open) } < 0 {
+        return (None, None);
+    }
+    // SAFETY: all-zero answers are valid; the queries fill them.
+    let mut node: D3DKMT_NODE_PERFDATA = unsafe { zeroed() };
+    node.NodeOrdinal = 0;
+    node.PhysicalAdapterIndex = 0;
+    let mut mem: D3DKMT_ADAPTER_PERFDATA = unsafe { zeroed() };
+    mem.PhysicalAdapterIndex = 0;
+    let core = adapter_info(open.hAdapter, KMTQAITYPE_NODEPERFDATA, &mut node);
+    let memory = adapter_info(open.hAdapter, KMTQAITYPE_ADAPTERPERFDATA, &mut mem);
+    let close = D3DKMT_CLOSEADAPTER {
+        hAdapter: open.hAdapter,
+    };
+    // SAFETY: the handle just opened, closed once.
+    unsafe { D3DKMTCloseAdapter(&close) };
+    let mhz = |hz: u64| u32::try_from(hz / 1_000_000).ok().filter(|&m| m > 0);
+    (
+        if core { mhz(node.Frequency) } else { None },
+        if memory {
+            mhz(mem.MemoryFrequency)
+        } else {
+            None
+        },
+    )
+}
+
+/// The raw SMBIOS table (the 'RSMB' firmware table), or empty.
+pub fn smbios_table() -> Vec<u8> {
+    // SAFETY: no buffer: the call only returns the size needed.
+    let need = unsafe { GetSystemFirmwareTable(RSMB, 0, null_mut(), 0) };
+    if need == 0 || need > 16 << 20 {
+        return Vec::new();
+    }
+    let mut buf = vec![0u8; need as usize];
+    // SAFETY: the buffer is `need` bytes long and writable.
+    let got = unsafe { GetSystemFirmwareTable(RSMB, 0, buf.as_mut_ptr(), need) };
+    buf.truncate(if got <= need { got as usize } else { 0 });
+    buf
 }
 
 fn statistics(luid: LUID, kind: i32, id: u32) -> Option<D3DKMT_QUERYSTATISTICS> {

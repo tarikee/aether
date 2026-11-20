@@ -3,6 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
+pub mod smbios;
 pub mod socket;
 pub use socket::Socket;
 
@@ -97,6 +98,10 @@ pub struct MemSample {
     pub swap_total: u64,
     pub swap_used: u64,
     pub pressure: Option<f32>,
+    /// The system RAM's kind, such as `DDR4` (read once at start).
+    pub ram_type: Option<String>,
+    /// The system RAM's configured speed in MT/s (read once at start).
+    pub ram_mts: Option<u32>,
 }
 
 /// One graphics card.
@@ -110,6 +115,10 @@ pub struct GpuSample {
     pub vram_used: Option<u64>,
     pub vram_total: Option<u64>,
     pub fan_rpm: Option<u32>,
+    /// The graphics (core) clock now, in MHz.
+    pub mhz: Option<u32>,
+    /// The card's memory clock now, in MHz.
+    pub mem_mhz: Option<u32>,
 }
 
 /// What a sensor measures.

@@ -397,6 +397,15 @@ impl Obj<'_> {
         string(self.out, v);
     }
 
+    /// Text that may be missing.
+    fn opt_text(&mut self, k: &str, v: Option<&str>) {
+        self.key(k);
+        match v {
+            Some(s) => string(self.out, s),
+            None => put(self.out, "null"),
+        }
+    }
+
     fn close(self) {
         self.out.push(b'}');
     }
@@ -476,6 +485,8 @@ fn mem(out: &mut Vec<u8>, m: &MemSample) {
     o.int("swap_total", Some(m.swap_total));
     o.int("swap_used", Some(m.swap_used));
     o.f32("pressure", m.pressure);
+    o.opt_text("ram_type", m.ram_type.as_deref());
+    o.int("ram_mts", m.ram_mts.map(u64::from));
     o.close();
 }
 
@@ -489,6 +500,8 @@ fn gpu(out: &mut Vec<u8>, g: &GpuSample) {
     o.int("vram_used", g.vram_used);
     o.int("vram_total", g.vram_total);
     o.int("fan_rpm", g.fan_rpm.map(u64::from));
+    o.int("mhz", g.mhz.map(u64::from));
+    o.int("mem_mhz", g.mem_mhz.map(u64::from));
     o.close();
 }
 
@@ -620,7 +633,7 @@ mod tests {
             render(&Reading::default()),
             "{\"schema\":1,\"t\":0,\"cpu\":{\"pct\":null,\"threads\":[],\"threads_mhz\":[],\"mhz\":null,\"temp_c\":null,\"power_w\":null,\"load\":null},\
              \"mem\":{\"total\":0,\"used\":0,\"available\":0,\"cached\":0,\"swap_total\":0,\
-             \"swap_used\":0,\"pressure\":null},\"gpus\":[],\"sensors\":[],\"disks\":[],\
+             \"swap_used\":0,\"pressure\":null,\"ram_type\":null,\"ram_mts\":null},\"gpus\":[],\"sensors\":[],\"disks\":[],\
              \"nets\":[],\"battery\":null,\"host\":{\"uptime_s\":0,\"threads\":0},\"procs\":[]}\n"
         );
     }

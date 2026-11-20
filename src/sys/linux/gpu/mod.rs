@@ -22,7 +22,7 @@ pub type Share = (String, f32, u64);
 /// One graphics card, of a vendor's kind.
 enum Card {
     Amd(Box<amd::Card>),
-    Intel(intel::Card),
+    Intel(Box<intel::Card>),
     Nvidia(nvidia::Card),
 }
 
@@ -48,7 +48,7 @@ impl Card {
 fn open_card(root: &Root, dev: &Path) -> Option<Card> {
     amd::open(root, dev)
         .map(|c| Card::Amd(Box::new(c)))
-        .or_else(|| intel::open(dev).map(Card::Intel))
+        .or_else(|| intel::open(dev).map(|c| Card::Intel(Box::new(c))))
 }
 
 /// The graphics card source, with its files kept open.
@@ -178,6 +178,8 @@ mod tests {
             vram_used: None,
             vram_total,
             fan_rpm: None,
+            mhz: None,
+            mem_mhz: None,
         }
     }
 
